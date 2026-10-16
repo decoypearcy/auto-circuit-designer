@@ -423,10 +423,14 @@ function Confirm-KiCad {
         Write-Info 'using the direct installer download'
         $dest = Join-Path $env:TEMP ("kicad-$ver-x86_64.exe")
         $got = $false
-        foreach ($key in @('kicad.url_github', 'kicad.url_cern', 'kicad.url_aarnet', 'kicad.url_mit')) {
+        # Reuse an earlier, still validly signed download (a rerun after a failed install).
+        if ((Test-Path -LiteralPath $dest) -and ((Get-AuthenticodeSignature -FilePath $dest).Status -eq 'Valid')) {
+            Write-Info "reusing $dest"; $got = $true
+        }
+        if (-not $got) { foreach ($key in @('kicad.url_github', 'kicad.url_cern', 'kicad.url_aarnet', 'kicad.url_mit')) {
             try { Save-Download (Expand-Url $Pins[$key] $ver) $dest; $got = $true; break }
             catch { Write-Warn2 "download failed from $key" }
-        }
+        } }
         if (-not $got) {
             throw ("Could not download KiCad $ver. If it is not published yet, rerun with -KiCadVersion " + $Pins['kicad.fallback_version'])
         }
@@ -531,8 +535,13 @@ function Confirm-BaseMcp {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup -ClientType manual
             $code = $LASTEXITCODE
         } finally { Pop-Location }
-        if ($code -ne 0) { throw "The base MCP setup-windows.ps1 exited with $code. Scroll up for its message." }
-        if (-not (Test-Path -LiteralPath $dist)) { throw 'dist\index.js missing after build.' }
+        if (-not (Test-Path -LiteralPath $dist)) { throw "dist\index.js missing after build (base setup exit $code). Scroll up for its message." }
+        if ($code -ne 0) {
+            # Its KiCad detection only looks under C:\ (Program Files, Program Files (x86), LocalAppData),
+            # so with -InstallRoot it reports an error and skips its pip step. The build itself ran;
+            # the Python packages are checked and installed into KiCad's Python below.
+            Write-Warn2 "base MCP setup-windows.ps1 exited with $code; dist\index.js exists, continuing with our own Python check"
+        }
         Set-Content -LiteralPath $marker -Value "$tag $commit" -Encoding ASCII
         Write-Good 'built'
         Add-Result 'base MCP' 'INSTALLED' $tag
