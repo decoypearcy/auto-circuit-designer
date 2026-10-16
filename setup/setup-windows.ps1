@@ -534,6 +534,10 @@ function Confirm-BaseMcp {
         $npm = Get-ToolPath 'npm.cmd'
         if (-not $npm) { $npm = Join-Path (Split-Path -Parent (Get-ToolPath 'node')) 'npm.cmd' }
         if (-not (Test-Path -LiteralPath $npm)) { throw 'npm.cmd not found next to node.exe.' }
+        # Package install scripts (esbuild) run "node" through cmd.exe; make sure node's folder is first on PATH.
+        $nodeDir = Split-Path -Parent (Get-ToolPath 'node')
+        $env:Path = $nodeDir + ';' + $env:Path
+        Write-Info ("PATH has " + $env:Path.Length + " characters; node folder: $nodeDir")
         Push-Location $McpDir
         try {
             Write-Info 'npm ci (from package-lock.json)'
