@@ -35,7 +35,7 @@ Options: `-NoPrompt` (use defaults, no questions), `-ProjectsRoot` and `-Library
 | Node.js LTS | 24.22.0 (any 18 or newer already installed is kept) | winget `OpenJS.NodeJS.LTS`, else the official MSI (SHA-256 checked) |
 | Java, Eclipse Temurin JRE | 25.0.4.1 (any 25 or newer is kept) | winget `EclipseAdoptium.Temurin.25.JRE`, else the Temurin MSI (SHA-256 checked) |
 | Freerouting | 2.4.1 | jar downloaded to `%LOCALAPPDATA%\acd\freerouting\` (SHA-256 checked) |
-| Base MCP (mixelpixx/KiCAD-MCP-Server) | v2.7.0 | cloned to `%LOCALAPPDATA%\acd\kicad-mcp-server`, its own `setup-windows.ps1` run |
+| Base MCP (mixelpixx/KiCAD-MCP-Server) | v2.7.0 | cloned to `%LOCALAPPDATA%\acd\kicad-mcp-server`, built with `npm ci` and `npm run build` |
 | uv | 0.12.8 | winget `astral-sh.uv`, else the pinned install script |
 | git | 2.55.0.3 | winget `Git.Git`, else the official installer |
 
@@ -47,7 +47,7 @@ Why Java 25: the Freerouting 2.4.1 jar was built for Java 25. The base MCP itsel
 - Creates `%LOCALAPPDATA%\acd\` with `freerouting\` and `kicad-mcp-server\` inside.
 - Creates your Projects and Library folders. The library gets `symbols\acd.kicad_sym` (empty), `footprints\acd.pretty\`, `3dmodels\` and `registry.json` (`{}`). Existing files are never overwritten.
 - Sets four user environment variables: `ACD_PROJECTS_ROOT`, `ACD_LIBRARY_ROOT`, `ACD_KICAD_CLI`, `FREEROUTING_JAR`.
-- Runs `npm install`, `pip install` (into KiCad's own Python) and `npm run build` for the base MCP, through its own setup script.
+- Runs `npm ci` and `npm run build` for the base MCP, and `pip install --user -r requirements.txt` into KiCad's own Python if its imports fail. The base project's own `setup-windows.ps1` is not used (it only finds KiCad under `C:\` and hides npm and pip errors).
 - Runs `uv sync` in `companion\` (creates `companion\.venv`). This is skipped, with a note, if `companion\pyproject.toml` does not exist yet.
 - Edits `%APPDATA%\Claude\claude_desktop_config.json`: adds or updates only the `kicad` and `acd` entries. Everything else in the file is kept. A copy is saved first as `claude_desktop_config.json.acd-backup-<date-time>` in the same folder. See `claude_desktop_config.example.json` for what the two entries look like.
 

@@ -528,20 +528,22 @@ function Confirm-BaseMcp {
         Write-Good 'already built, skipping its setup-windows.ps1'
         Add-Result 'base MCP' 'OK' $tag
     } else {
-        Write-Info 'running the base MCP setup-windows.ps1 (npm install, pip install, npm run build)'
-        $setup = Join-Path $McpDir 'setup-windows.ps1'
+        # The base project's own setup-windows.ps1 is not used: its KiCad detection only looks under C:\
+        # and it hides npm and pip output. Its steps are done here instead: npm ci, npm run build, and
+        # (below) pip install -r requirements.txt into KiCad's own Python.
+        $npm = Get-ToolPath 'npm.cmd'
+        if (-not $npm) { $npm = Join-Path (Split-Path -Parent (Get-ToolPath 'node')) 'npm.cmd' }
+        if (-not (Test-Path -LiteralPath $npm)) { throw 'npm.cmd not found next to node.exe.' }
         Push-Location $McpDir
         try {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup -ClientType manual
-            $code = $LASTEXITCODE
+            Write-Info 'npm ci (from package-lock.json)'
+            & $npm ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw "npm ci exited with $LASTEXITCODE. Scroll up for its message." }
+            Write-Info 'npm run build'
+            & $npm run build
+            if ($LASTEXITCODE -ne 0) { throw "npm run build exited with $LASTEXITCODE. Scroll up for its message." }
         } finally { Pop-Location }
-        if (-not (Test-Path -LiteralPath $dist)) { throw "dist\index.js missing after build (base setup exit $code). Scroll up for its message." }
-        if ($code -ne 0) {
-            # Its KiCad detection only looks under C:\ (Program Files, Program Files (x86), LocalAppData),
-            # so with -InstallRoot it reports an error and skips its pip step. The build itself ran;
-            # the Python packages are checked and installed into KiCad's Python below.
-            Write-Warn2 "base MCP setup-windows.ps1 exited with $code; dist\index.js exists, continuing with our own Python check"
-        }
+        if (-not (Test-Path -LiteralPath $dist)) { throw 'dist\index.js missing after npm run build.' }
         Set-Content -LiteralPath $marker -Value "$tag $commit" -Encoding ASCII
         Write-Good 'built'
         Add-Result 'base MCP' 'INSTALLED' $tag
