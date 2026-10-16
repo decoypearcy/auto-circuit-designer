@@ -11,6 +11,9 @@ from .config import AcdError
 
 _NET_RE = re.compile(r"\[([^\]]+)\]")
 
+# DRC types that concern silkscreen. Custom acd rules report as text_height / text_thickness.
+_SILK_TYPES = {"text_height", "text_thickness"}
+
 
 def load_report(path: Path) -> dict[str, Any]:
     if not path.is_file():
@@ -46,6 +49,21 @@ def _count(violations: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+def warning_types(violations: list[dict[str, Any]]) -> dict[str, int]:
+    """Warning count per violation type, so no warning is hidden behind a total."""
+    out: dict[str, int] = {}
+    for v in violations:
+        if v.get("severity") == "warning":
+            t = str(v.get("type", "")) or "unknown"
+            out[t] = out.get(t, 0) + 1
+    return dict(sorted(out.items()))
+
+
+def is_silk(v: dict[str, Any]) -> bool:
+    t = str(v.get("type", ""))
+    return t.startswith("silk") or t in _SILK_TYPES
+
+
 def erc_violations(report: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for sheet in report.get("sheets", []):
@@ -56,6 +74,7 @@ def erc_violations(report: dict[str, Any]) -> list[dict[str, Any]]:
 def summarize_erc(report: dict[str, Any], limit: int = 20) -> dict[str, Any]:
     viol = erc_violations(report)
     counts = _count(viol)
+    counts["warning_types"] = warning_types(viol)
     counts["first_errors"] = [_brief(v) for v in viol if v.get("severity") == "error"][:limit]
     return counts
 
@@ -73,6 +92,7 @@ def summarize_drc(report: dict[str, Any], limit: int = 20) -> dict[str, Any]:
     counts = _count(both)
     counts["unconnected"] = len(unconnected)
     counts["parity_errors"] = _count(parity)["errors"]
+    counts["warning_types"] = warning_types(both)
     counts["first_errors"] = [_brief(v) for v in both if v.get("severity") == "error"][:limit]
     counts["first_unconnected"] = [_brief(v) for v in unconnected][:limit]
     return counts
@@ -86,3 +106,10 @@ def unconnected_nets(report: dict[str, Any]) -> list[str]:
         for item in u.get("items", []):
             nets.update(_NET_RE.findall(item.get("description", "")))
     return sorted(nets)
+
+
+def silk_warnings(report: dict[str, Any], limit: int = 50) -> list[dict[str, Any]]:
+    """Silkscreen DRC warnings. They do not block drc_clean, so the review must list them (R-15)."""
+    viol, _, parity = drc_parts(report)
+    return [_brief(v) for v in viol + parity
+            if v.get("severity") == "warning" and is_silk(v)][:limit]

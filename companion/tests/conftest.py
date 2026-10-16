@@ -43,7 +43,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("ACD_PROFILE", str(DEFAULT_PROFILE))
     monkeypatch.setenv("ACD_BACKUP_KEEP", "5")
     monkeypatch.setenv("FAKE_LOG", str(tmp_path / "kicad-calls.log"))
-    for k in ("FAKE_ERC_ERRORS", "FAKE_ERC_WARNINGS", "FAKE_DRC_ERRORS", "FAKE_PARITY_ERRORS",
+    for k in ("FAKE_ERC_ERRORS", "FAKE_ERC_WARNINGS", "FAKE_DRC_ERRORS", "FAKE_DRC_SILK", "FAKE_PARITY_ERRORS",
               "FAKE_UNCONNECTED", "FAKE_FAIL"):
         monkeypatch.delenv(k, raising=False)
     return {"projects": projects, "library": library, "log": tmp_path / "kicad-calls.log",

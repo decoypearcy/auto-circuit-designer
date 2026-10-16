@@ -197,6 +197,17 @@ def test_drc_sets_gates_4_and_5_with_parity_and_unconnected(proj, monkeypatch):
     summary = tools.review_summary("demo")
     assert summary["unconnected_nets"] == ["NET0", "NET1", "NET2"]
     assert summary["drc"]["unconnected"] == 3
+    assert summary["silk_warnings"] == []
+
+
+def test_silk_warnings_listed_but_do_not_block_drc(proj, monkeypatch):
+    monkeypatch.setenv("FAKE_DRC_SILK", "2")
+    res = tools.run_drc("demo")
+    assert res["gates"]["drc_clean"] and res["warnings"] == 2
+    assert res["warning_types"] == {"silk_edge_clearance": 2}
+    summary = tools.review_summary("demo")
+    assert [w["type"] for w in summary["silk_warnings"]] == ["silk_edge_clearance"] * 2
+    assert summary["drc"]["warning_types"] == {"silk_edge_clearance": 2}
 
 
 def test_kicad_failure_is_reported(proj, monkeypatch):

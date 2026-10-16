@@ -186,6 +186,7 @@ def review_summary(project: str) -> dict[str, Any]:
     status = gt.gate_status(proj)
     erc = drc = None
     nets: list[str] = []
+    silk: list[dict[str, Any]] = []
     warnings = 0
     erc_path, drc_path = proj.reports / "erc.json", proj.reports / "drc.json"
     if erc_path.is_file():
@@ -199,10 +200,11 @@ def review_summary(project: str) -> dict[str, Any]:
         drc.pop("first_unconnected", None)
         warnings += drc["warnings"]
         nets = reports.unconnected_nets(rep)
+        silk = reports.silk_warnings(rep)
     return {
         "project": proj.name, "rev": status["rev"], "status": status["status"],
         "gates": status["gates"], "erc": erc, "drc": drc,
-        "unconnected_nets": nets, "open_warnings": warnings,
+        "unconnected_nets": nets, "open_warnings": warnings, "silk_warnings": silk,
         "note": "reports are from the last run_erc/run_drc; a stale gate means the file changed since",
     }
 

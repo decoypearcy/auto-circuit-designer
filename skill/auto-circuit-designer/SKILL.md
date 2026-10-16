@@ -36,6 +36,7 @@ it records the gate. Use the kicad one only for `get_drc_violations` detail.
 - Andrew advises when a different size is needed. If the description mentions an enclosure, standoffs or a mounting pattern but gives no size, ask before placing.
 - The spec can override count, size, plating and positions. Grounded (plated) holes only if Andrew asks: then use `MountingHole_3.2mm_M3_Pad_Via` and tie to GND.
 - Place the holes with the outline in step 5, before any parts.
+- Hide each hole's reference text right after placing it: kicad `move_footprint_text(reference="H1", field="reference", visible=false)`, and the same for H2 to H4. Holes are not in the BOM, and at a 4 mm inset the text gets clipped by the board edge (silk warning).
 
 ## Circuit spec format
 Write `spec/circuit-spec.yaml` in the project folder:
@@ -104,6 +105,7 @@ notes: []
 ### 6. Routing
 - Ask Andrew: auto route, manual (he routes in KiCad), or auto then he tidies. Default to auto.
 - Auto: kicad `check_freerouting`, then `autoroute`. Then add GND pours on both layers with kicad `add_copper_pour` and `refill_zones`, with stitching vias along the edges and near ground pins.
+- Zones: run kicad `refill_zones` after any change to tracks, pours or placement and always right before `acd run_drc`, or DRC checks stale fills. Then `save_board`.
 - Manual: tell Andrew the project is ready; wait until he says he has closed it.
 - `acd run_drc`. Fix errors (kicad `get_drc_violations`, `modify_trace`, `route_pad_to_pad`, `add_via`). Re-run until clean or until only items needing Andrew remain.
 - `acd backup(stage=routed)`.
@@ -114,12 +116,15 @@ notes: []
 Review - <project> rev <X>
 ERC: <n> errors, <n> warnings
 DRC: <n> errors, <n> warnings
+Silk warnings: <n> (<type: item> per line, from silk_warnings)
+Other warnings: <type: count> (from erc/drc warning_types)
 Unrouted nets: <n> (<list>)
 Unverified parts: <list or none>
 Board: <w> x <h> mm, <n> holes M3, <n> parts
 Open items: <list>
 Preview: <board view>
 ```
+- Silk warnings do not block the DRC gate, so always list them. Fix them (move or hide the text) unless Andrew accepts them.
 - Andrew may edit in KiCad. While he does, do not write to the project. When he says he is done, `acd lock_check`, then re-run `acd check_parts`, `acd run_erc`, `acd run_drc` and resend the summary. Offer to re-run the autorouter if he moved parts.
 - Schematic changes: edit the schematic, then `sync_schematic_to_board` (placement is kept), then re-check.
 - `acd backup(stage=review)` after each round of changes.

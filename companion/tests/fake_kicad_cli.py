@@ -5,6 +5,7 @@ Behaviour knobs (environment variables):
   FAKE_ERC_ERRORS     number of ERC error violations (default 0)
   FAKE_ERC_WARNINGS   number of ERC warnings (default 0)
   FAKE_DRC_ERRORS     number of DRC error violations (default 0)
+  FAKE_DRC_SILK       number of DRC silkscreen warnings (default 0)
   FAKE_PARITY_ERRORS  number of schematic-parity errors (default 0)
   FAKE_UNCONNECTED    number of unconnected items (default 0)
   FAKE_FAIL           if set, every call exits with code 3
@@ -91,7 +92,8 @@ def main(argv):
             {"$schema": "x", "sheets": [{"path": "/", "violations": v}]}), encoding="utf-8")
     elif cmd == ["pcb", "drc"]:
         Path(opt(argv, "-o", "--output")).write_text(json.dumps({
-            "violations": violations(n("FAKE_DRC_ERRORS"), "error", "clearance"),
+            "violations": violations(n("FAKE_DRC_ERRORS"), "error", "clearance")
+            + violations(n("FAKE_DRC_SILK"), "warning", "silk_edge_clearance"),
             "unconnected_items": violations(n("FAKE_UNCONNECTED"), "error", "unconnected_items"),
             "schematic_parity": violations(n("FAKE_PARITY_ERRORS"), "error", "footprint_mismatch"),
         }), encoding="utf-8")
