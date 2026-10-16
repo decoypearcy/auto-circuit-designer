@@ -3,8 +3,8 @@
 Flag sources (checked 2026-10-16):
   * pcb drc, pcb export gerbers/drill/pos: KiCad 10 CLI reference
     https://docs.kicad.org/10.0/en/cli/cli.html (confirmed).
-  * sch erc, sch export bom: the K10 page body could not be read through the
-    fetch tool, so the KiCad 9 form is used and marked VERIFY-K10.
+  * sch erc, sch export bom: verified against kicad-cli 10.0.6 --help and real
+    runs on PEARCE-PC (T-14, 2026-10-16).
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class KiCadCli:
         return self.run(["--version"]).strip()
 
     def erc(self, sch: Path, out_json: Path) -> None:
-        # VERIFY-K10: sch erc flags taken from the KiCad 9 docs.
+        # Verified on kicad-cli 10.0.6 (T-14).
         self.run([
             "sch", "erc",
             "--format", "json",
@@ -92,7 +92,7 @@ class KiCadCli:
     def bom(self, sch: Path, out_csv: Path, *, fields: Sequence[str],
             labels: Sequence[str], group_by: Sequence[str] = (),
             sort_field: str = "Reference", exclude_dnp: bool = False) -> None:
-        # VERIFY-K10: sch export bom flags taken from the KiCad 9 docs.
+        # Verified on kicad-cli 10.0.6 (T-14).
         args: list[object] = [
             "sch", "export", "bom",
             "--fields", ",".join(fields),

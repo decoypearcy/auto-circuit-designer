@@ -482,7 +482,7 @@ def test_new_revision_without_changes_does_not_restore(approved):
 def test_kicad_pro_builders_use_profile_values():
     profile = load_profile(DEFAULT_PROFILE)
     r = kipro.build_rules(profile)
-    assert r["solder_mask_min_width"] == 0.1 and r["min_through_hole_diameter"] == 0.3
+    assert "solder_mask_min_width" not in r and r["min_through_hole_diameter"] == 0.3
     assert kipro.build_default_netclass(profile)["via_drill"] == 0.3
 
 

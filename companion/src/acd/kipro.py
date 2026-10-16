@@ -9,9 +9,11 @@ from .config import AcdError
 from .profile import get, require
 from .store import Project, write_json_atomic
 
-# VERIFY-K10: key names below are from KiCad 8/9 project files; re-check
-# against a project saved by KiCad 10 (board.design_settings.rules,
-# board.design_settings.defaults, net_settings.classes).
+# Key names verified on KiCad 10.0.6 (T-14, 2026-10-16): every key below is in a
+# .kicad_pro written by pcbnew 10.0.6 and is read back into the board design
+# settings after a load and save. solder_mask_min_width is NOT read from
+# .kicad_pro by KiCad 10 (it is a board-file setup value; KiCad's default 0 is
+# kept), so the profile's solder_mask.min_web_mm is informational only.
 
 
 def _mm(value: Any) -> float:
@@ -19,7 +21,7 @@ def _mm(value: Any) -> float:
 
 
 def build_rules(profile: dict[str, Any]) -> dict[str, float]:
-    """board.design_settings.rules  # VERIFY-K10"""
+    """board.design_settings.rules (verified on KiCad 10.0.6)"""
     return {
         "min_clearance": _mm(require(profile, "clearance.min_mm")),
         "min_track_width": _mm(require(profile, "tracks.min_width_mm")),
@@ -29,12 +31,11 @@ def build_rules(profile: dict[str, Any]) -> dict[str, float]:
         "min_via_annular_width": _mm(require(profile, "annular_ring.min_mm")),
         "min_text_height": _mm(require(profile, "silkscreen.min_text_height_mm")),
         "min_text_thickness": _mm(require(profile, "silkscreen.min_line_mm")),
-        "solder_mask_min_width": _mm(require(profile, "solder_mask.min_web_mm")),
     }
 
 
 def build_defaults(profile: dict[str, Any]) -> dict[str, float]:
-    """board.design_settings.defaults (silkscreen)  # VERIFY-K10"""
+    """board.design_settings.defaults (silkscreen; verified on KiCad 10.0.6)"""
     height = _mm(require(profile, "silkscreen.default_text_height_mm"))
     line = _mm(require(profile, "silkscreen.default_line_mm"))
     return {
@@ -46,7 +47,7 @@ def build_defaults(profile: dict[str, Any]) -> dict[str, float]:
 
 
 def build_default_netclass(profile: dict[str, Any]) -> dict[str, Any]:
-    """net_settings.classes[name == Default]  # VERIFY-K10"""
+    """net_settings.classes[name == Default] (verified on KiCad 10.0.6)"""
     return {
         "clearance": _mm(require(profile, "clearance.default_mm")),
         "track_width": _mm(require(profile, "tracks.default_width_mm")),
@@ -89,17 +90,17 @@ def build_dru(profile: dict[str, Any]) -> str:
   (condition "A.Type == 'Via'")
   (constraint annular_width (min {ring}mm)))
 
-# VERIFY-K10: A.Pad_Type value 'Through-hole'
+# Verified on KiCad 10.0.6: fires on a TH pad (T-14).
 (rule "acd_pad_annular_ring"
   (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole'")
   (constraint annular_width (min {ring}mm)))
 
-# VERIFY-K10: hole_size constraint name
+# Verified on KiCad 10.0.6: reports drill_out_of_range (T-14).
 (rule "acd_drill_size"
   (condition "A.Type == 'Via' || A.Type == 'Pad'")
   (constraint hole_size (min {dmin}mm) (max {dmax}mm)))
 
-# VERIFY-K10: text_height / text_thickness constraint names
+# Verified on KiCad 10.0.6: text_height and text_thickness fire, as warnings (T-14).
 (rule "acd_silk_text_height"
   (condition "(A.Type == 'Text' || A.Type == 'Text Box') && (A.Layer == 'F.Silkscreen' || A.Layer == 'B.Silkscreen')")
   (constraint text_height (min {th}mm)))
