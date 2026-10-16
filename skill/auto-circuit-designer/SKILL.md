@@ -28,7 +28,9 @@ it records the gate. Use the kicad one only for `get_drc_violations` detail.
 - KiCad DRC does not check net class track widths. `acd run_drc` does (`netclass_check.narrow_tracks`). A neck-down where a track enters a fine-pitch pad is fine; any other narrow track must be fixed. A net class with no nets fails the DRC gate.
 - `add_mounting_hole` uses a footprint that is not in KiCad 10 (`MountingHole_3.2mm`) and adds no schematic symbol. Do not use it; holes are schematic symbols (see Mounting holes).
 - The server writes `in_bom yes` on every placed symbol, even where the library says otherwise. Run `acd fix_bom_flags` after adding mounting holes or other non-BOM symbols.
-- `sync_schematic_to_board` does not copy custom fields to footprints, so DRC shows `footprint_symbol_field_mismatch` (Missing symbol field 'MPN'). The BOM comes from the schematic, so this is a known, accepted warning. List it in the review; do not try to fix it.
+- `sync_schematic_to_board` does not copy custom fields (MPN, Manufacturer, Description) to footprints, so DRC shows `footprint_symbol_field_mismatch`, one per part. The BOM comes from the schematic, so this is a known, accepted warning. List it in the review; do not try to fix it.
+- Sync leaves a no-connect pin's pad with no net, where KiCad expects `unconnected-(<ref>-<pin>)`. DRC shows one `net_conflict` warning per no-connect pin. Known, accepted. Any other `net_conflict` is a real problem (usually local labels).
+- Sync also adds an empty board net named after the PWR_FLAG symbol. It has no pads and is harmless.
 - `check_courtyard_overlaps` reports mounting holes as off the board because of their value text. Ignore boundary flags on H references.
 
 ## House conventions (from profiles/pcbway-standard-2layer.yaml)
