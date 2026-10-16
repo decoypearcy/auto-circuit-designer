@@ -1,0 +1,100 @@
+# Pinned versions for the Auto Circuit Designer Windows 10 setup.
+# This file is read by setup-windows.ps1 (simple parser: top-level sections, two-space
+# indented "key: value" lines, values in double quotes, no lists, comments only on their own line).
+# Do not use the "#" character inside a value.
+#
+# checked = the date these versions and URLs were looked up.
+# "verified" notes say how each value was confirmed. Anything marked UNVERIFIED must be
+# confirmed on the PC (the script does this where it can).
+checked: "2026-10-16"
+
+kicad:
+  # Latest 10.0 patch listed as stable on the KiCad Windows download page on the check date.
+  # UNVERIFIED install path: at check time the GitHub asset for 10.0.7 returned 404 and winget
+  # only listed up to 10.0.6. The script tries winget, then the mirror URLs below, then stops with
+  # instructions. If 10.0.7 cannot be fetched, rerun with -KiCadVersion 10.0.6 (verified downloadable).
+  # Pinned to 10.0.6 (verified downloadable and in winget). Use -KiCadVersion 10.0.7 once it is published.
+  version: "10.0.6"
+  fallback_version: "10.0.6"
+  winget_id: "KiCad.KiCad"
+  source_url: "https://www.kicad.org/download/windows/"
+  url_github: "https://github.com/KiCad/kicad-source-mirror/releases/download/{version}/kicad-{version}-x86_64.exe"
+  url_cern: "https://kicad-downloads.s3.cern.ch/windows/stable/kicad-{version}-x86_64.exe"
+  url_aarnet: "https://mirror.aarnet.edu.au/pub/kicad/windows/stable/kicad-{version}-x86_64.exe"
+  url_mit: "https://mirrors.mit.edu/kicad/windows/stable/kicad-{version}-x86_64.exe"
+  # No SHA-256 is published by KiCad. The script checks the Authenticode signature instead
+  # (signer: KiCad Services Corporation).
+  signer: "KiCad Services Corporation"
+  winget_source_url: "https://wingetly.io/apps/ki-cad/ki-cad"
+  notes: "Windows 10 is no longer tested by KiCad (R-13). kicad-cli lives in bin of the install folder."
+
+node:
+  # Active LTS line on the check date (Node 24). Base MCP needs Node 18 or higher.
+  version: "24.22.0"
+  min_major: "18"
+  winget_id: "OpenJS.NodeJS.LTS"
+  source_url: "https://nodejs.org/en/download"
+  msi_url: "https://nodejs.org/dist/v{version}/node-v{version}-x64.msi"
+  shasums_url: "https://nodejs.org/dist/v{version}/SHASUMS256.txt"
+  # UNVERIFIED: the winget index page seen on the check date listed 24.20.0 as newest, so the pinned
+  # version may not be in winget yet. The script then falls back to the MSI and checks the SHA-256
+  # from SHASUMS256.txt at run time.
+  winget_source_url: "https://wingetly.io/apps/open-js/node-js-lts"
+
+java:
+  # Freerouting 2.4.1 jar class files are major version 69 (Java 25), checked by reading the jar.
+  # The base MCP only needs Java 21 or higher, so Java 25 satisfies both.
+  version: "25.0.4.1"
+  winget_version: "25.0.4.101"
+  min_major: "25"
+  winget_id: "EclipseAdoptium.Temurin.25.JRE"
+  source_url: "https://api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jre&os=windows&vendor=eclipse"
+  msi_url: "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jre_x64_windows_hotspot_25.0.4.1_1.msi"
+  msi_sha256: "0b3b2550b36b8997be76c70f15b6afd29a0631622ea134c973a6c8180859a56b"
+  winget_source_url: "https://wingetly.io/apps/eclipse-adoptium/temurin-25-jre"
+
+freerouting:
+  # Latest stable release (marked Latest on GitHub, published 2026-09-03 per the jar Build-Date).
+  version: "2.4.1"
+  source_url: "https://github.com/freerouting/freerouting/releases/tag/v2.4.1"
+  jar_url: "https://github.com/freerouting/freerouting/releases/download/v2.4.1/freerouting-2.4.1.jar"
+  # SHA-256 computed from a download of the jar on the check date (64,076,787 bytes).
+  jar_sha256: "251101c3eeac22d7e7dfcf6796603279e5d1000283eb82d8f093780f7afc6aa9"
+  jar_name: "freerouting-2.4.1.jar"
+  java_requirement: "25"
+  notes: "Runtime requirement is Java 25. Verified: Freerouting.class in the jar has class file major version 69."
+
+base_mcp:
+  # Latest release tag of mixelpixx/KiCAD-MCP-Server on the check date is v2.7.0 (published 20 Aug 2026).
+  # The tracker expected v2.8.x, but no v2.8 release exists yet.
+  tag: "v2.7.0"
+  commit: "aa53d52c2e37a13cb3574a6e0acf2c728b4d6bfb"
+  repo_url: "https://github.com/mixelpixx/KiCAD-MCP-Server.git"
+  source_url: "https://github.com/mixelpixx/KiCAD-MCP-Server/releases/tag/v2.7.0"
+  license: "MIT"
+  # How it finds things (read from the v2.7.0 source):
+  #   Freerouting jar : env FREEROUTING_JAR, else %USERPROFILE%\.kicad-mcp\freerouting.jar
+  #   Java            : first "java" on PATH (must be 21 or higher), then JAVA_HOME. Docker is the fallback.
+  #   Python          : env KICAD_PYTHON, else KiCad bundled bin\python.exe
+  #   PYTHONPATH      : env PYTHONPATH, else KiCad lib\python3\dist-packages
+  #   Backend         : env KICAD_BACKEND = ipc, swig or auto (default auto)
+  backend: "swig"
+  # The v2.7.0 source logs that the SWIG backend "will be removed in KiCAD 10.0". That comment is
+  # out of date: KiCad's docs say SWIG is deprecated since 9.0 and planned for removal in 11.0, and
+  # kicad-python lists it as present in KiCad 9 and 10. The smoke check still confirms the import.
+  #   https://dev-docs.kicad.org/en/apis-and-binding/pcbnew/index.html
+
+uv:
+  version: "0.12.8"
+  winget_id: "astral-sh.uv"
+  source_url: "https://github.com/astral-sh/uv/releases/tag/0.12.8"
+  install_script_url: "https://astral.sh/uv/0.12.8/install.ps1"
+  python_min: "3.11"
+  winget_source_url: "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/a/astral-sh/uv/0.12.8/astral-sh.uv.installer.yaml"
+
+git:
+  version: "2.55.0.3"
+  winget_id: "Git.Git"
+  source_url: "https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.3"
+  exe_url: "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/Git-2.55.0.3-64-bit.exe"
+  winget_source_url: "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/g/Git/Git/2.55.0.3/Git.Git.installer.yaml"

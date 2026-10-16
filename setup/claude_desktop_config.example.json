@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "kicad": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\YOURNAME\\AppData\\Local\\acd\\kicad-mcp-server\\dist\\index.js"
+      ],
+      "env": {
+        "PYTHONPATH": "C:\\Program Files\\KiCad\\10.0\\lib\\python3\\dist-packages",
+        "KICAD_PYTHON": "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe",
+        "KICAD_BACKEND": "swig",
+        "FREEROUTING_JAR": "C:\\Users\\YOURNAME\\AppData\\Local\\acd\\freerouting\\freerouting-2.4.1.jar",
+        "NODE_ENV": "production",
+        "LOG_LEVEL": "info"
+      }
+    },
+    "acd": {
+      "command": "C:\\Users\\YOURNAME\\AppData\\Local\\Microsoft\\WinGet\\Links\\uv.exe",
+      "args": [
+        "run",
+        "--project",
+        "C:\\Users\\YOURNAME\\source\\auto-circuit-designer\\companion",
+        "acd-mcp"
+      ],
+      "env": {
+        "ACD_PROJECTS_ROOT": "C:\\Users\\YOURNAME\\Documents\\AutoCircuitDesigner\\Projects",
+        "ACD_LIBRARY_ROOT": "C:\\Users\\YOURNAME\\Documents\\AutoCircuitDesigner\\Library",
+        "ACD_KICAD_CLI": "C:\\Program Files\\KiCad\\10.0\\bin\\kicad-cli.exe",
+        "ACD_PROFILE": "C:\\Users\\YOURNAME\\source\\auto-circuit-designer\\profiles\\pcbway-standard-2layer.yaml"
+      }
+    }
+  }
+}
