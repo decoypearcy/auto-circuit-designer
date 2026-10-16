@@ -504,4 +504,76 @@ def test_server_registers_all_tools(env):
     listed = asyncio.run(server.list_tools())
     listed = listed.tools if hasattr(listed, "tools") else listed
     assert sorted(t.name for t in listed) == sorted(TOOL_NAMES)
-    assert len(TOOL_NAMES) == 18
+    assert len(TOOL_NAMES) == 19
+
+
+# ------------------------------------------------- T-15 board checks
+PCB_TRACKS = """(kicad_pcb (version 20250114)
+  (net 0 "")
+  (net 1 "VIN")
+  (segment (start 0 0) (end 1 0) (width 0.5) (layer "F.Cu") (net "VIN") (uuid "a"))
+  (segment (start 1 0) (end 2 0) (width 0.375) (layer "F.Cu") (net "VIN") (uuid "b"))
+  (segment (start 0 1) (end 1 1) (width 0.25) (layer "F.Cu") (net 1) (uuid "c"))
+  (segment (start 0 2) (end 1 2) (width 0.25) (layer "B.Cu") (net "LED_A") (uuid "d"))
+)
+"""
+
+
+def _pro_with_power(proj, assignments=None, patterns=None):
+    pro = json.loads((proj / "demo.kicad_pro").read_text())
+    ns = pro.setdefault("net_settings", {})
+    ns["classes"] = [{"name": "Default", "track_width": 0.25}, {"name": "Power", "track_width": 0.5}]
+    ns["netclass_assignments"] = assignments
+    ns["netclass_patterns"] = patterns or []
+    (proj / "demo.kicad_pro").write_text(json.dumps(pro))
+
+
+def test_netclass_check_flags_narrow_tracks_and_resolves_net_codes(proj):
+    _pro_with_power(proj, assignments={"VIN": ["Power"]})
+    (proj / "demo.kicad_pcb").write_text(PCB_TRACKS)
+    res = tools.run_drc("demo")
+    nc = res["netclass_check"]
+    assert nc["classes"]["Power"] == ["VIN"] and nc["classes_without_nets"] == []
+    assert nc["narrow_tracks"]["VIN"] == {"class": "Power", "class_width": 0.5,
+                                          "min_width": 0.25, "segments": 2}
+    assert "LED_A" not in nc["narrow_tracks"] and res["gates"]["drc_clean"]
+    assert tools.review_summary("demo")["netclass"]["narrow_tracks"]["VIN"]["segments"] == 2
+
+
+def test_netclass_with_no_nets_fails_drc_gate(proj):
+    _pro_with_power(proj, assignments=None)
+    (proj / "demo.kicad_pcb").write_text(PCB_TRACKS)
+    res = tools.run_drc("demo")
+    assert res["netclass_check"]["classes_without_nets"] == ["Power"]
+    assert not res["gates"]["drc_clean"]
+    _pro_with_power(proj, patterns=[{"netclass": "Power", "pattern": "/VIN"}])
+    assert tools.run_drc("demo")["gates"]["drc_clean"]
+
+
+def test_fix_bom_flags_only_touches_symbols_marked_not_in_bom(proj):
+    sch = proj / "demo.kicad_sch"
+    sch.write_text("""(kicad_sch (version 20250114) (generator "test")
+  (lib_symbols
+    (symbol "Mechanical:MountingHole" (pin_names (offset 1.016)) (exclude_from_sim no) (in_bom no) (on_board yes))
+    (symbol "Device:R" (exclude_from_sim no) (in_bom yes) (on_board yes)))
+  (symbol (lib_id "Mechanical:MountingHole") (at 1 1 0) (unit 1)
+    (body_style 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+    (property "Reference" "H1") (property "Value" "MountingHole"))
+  (symbol
+    (lib_id "Device:R") (at 2 2 0) (in_bom yes) (on_board yes)
+    (property "Reference" "R1") (property "Value" "1k (x)"))
+)
+""")
+    res = tools.fix_bom_flags("demo")
+    assert res["changed"] == ["H1"] and res["backup"]
+    text = sch.read_text()
+    assert text.count("(in_bom no)") == 2 and text.count("(in_bom yes)") == 2
+    assert tools.fix_bom_flags("demo") == {"changed": [], "backup": None}
+
+
+def test_mcp_backups_folder_is_not_backed_up(proj):
+    (proj / ".mcp-backups").mkdir()
+    (proj / ".mcp-backups" / "demo.kicad_pcb.1").write_text("x")
+    name = tools.backup("demo", "manual")["backup"]
+    with zipfile.ZipFile(proj / "backups" / name) as zf:
+        assert not any(n.startswith(".mcp-backups") for n in zf.namelist())

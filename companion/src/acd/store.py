@@ -14,7 +14,7 @@ from typing import Any, Iterator
 from .config import AcdError, Settings, validate_name
 
 # Folders at the project root that are never zipped or restored.
-EXCLUDED_ROOT_DIRS = ("backups", "releases")
+EXCLUDED_ROOT_DIRS = ("backups", "releases", ".mcp-backups")  # .mcp-backups: kicad server snapshots
 # Restore and new_revision leave these alone (history must survive a restore).
 PROTECTED_ON_RESTORE = ("backups", "releases", "records")
 LOCK_PATTERNS = ("*.lck", "~*")

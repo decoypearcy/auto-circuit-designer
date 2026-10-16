@@ -13,7 +13,7 @@ TOOL_NAMES = (
     "init_project", "apply_profile", "lock_check", "confirm_spec", "register_part",
     "verify_part", "check_parts", "run_erc", "run_drc", "review_summary", "gate_status",
     "backup", "list_backups", "restore_backup", "approve", "export_release",
-    "verify_release", "new_revision",
+    "verify_release", "new_revision", "fix_bom_flags",
 )
 
 

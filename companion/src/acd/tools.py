@@ -5,6 +5,7 @@ Errors are raised as AcdError; the MCP layer reports them as tool errors.
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ import yaml
 
 from . import backups as bk
 from . import gates as gt
-from . import kipro, registry, reports
+from . import boardcheck, kipro, registry, reports
 from .config import AcdError, Settings, validate_name
 from .kicad import KiCadCli
 from .profile import get, load_profile
@@ -166,14 +167,43 @@ def run_drc(project: str) -> dict[str, Any]:
     out.unlink(missing_ok=True)
     cli.drc(proj.pcb, out)
     summary = reports.summarize_drc(reports.load_report(out))
-    drc_ok = summary["errors"] == 0
+    nc = _netclass_check(proj)
+    summary["netclass_check"] = nc
+    empty = len(nc["classes_without_nets"])
+    drc_ok = summary["errors"] == 0 and empty == 0
     routed = summary["unconnected"] == 0
     gt.set_gate(proj, "drc_clean", drc_ok,
                 f"{summary['errors']} errors (incl. {summary['parity_errors']} parity), "
+                f"{empty} net classes without nets, "
                 f"{summary['warnings']} warnings", hash_value=pcb_hash)
     gt.set_gate(proj, "unrouted_zero", routed, f"{summary['unconnected']} unconnected items",
                 hash_value=pcb_hash)
     return {"gates": {"drc_clean": drc_ok, "unrouted_zero": routed}, **summary}
+
+
+def _netclass_check(proj: Project) -> dict[str, Any]:
+    """KiCad DRC does not check net class widths; record them for the review (T-15)."""
+    if not proj.pro.is_file():
+        nc: dict[str, Any] = {"classes": {}, "classes_without_nets": [], "narrow_tracks": {}}
+    else:
+        nc = boardcheck.netclass_check(proj.pro, proj.pcb)
+    (proj.reports / "netclass.json").write_text(
+        json.dumps(nc, indent=2), encoding="utf-8")
+    return nc
+
+
+def fix_bom_flags(project: str) -> dict[str, Any]:
+    """Set in_bom no on placed symbols whose library symbol is not a BOM part
+    (mounting holes, fiducials). The kicad server writes in_bom yes on every symbol."""
+    _, proj, _ = _ctx(project)
+    proj.require_file(proj.sch, proj.sch.name)
+    text = proj.sch.read_text(encoding="utf-8")
+    new, changed = boardcheck.fix_bom_flags_text(text)
+    backup = None
+    if changed:
+        backup = bk.create_backup(proj, "manual")["backup"]
+        proj.sch.write_text(new, encoding="utf-8", newline="")
+    return {"changed": changed, "backup": backup}
 
 
 def gate_status(project: str) -> dict[str, Any]:
@@ -201,10 +231,15 @@ def review_summary(project: str) -> dict[str, Any]:
         warnings += drc["warnings"]
         nets = reports.unconnected_nets(rep)
         silk = reports.silk_warnings(rep)
+    nc_path = proj.reports / "netclass.json"
+    netclass = None
+    if nc_path.is_file():
+        netclass = json.loads(nc_path.read_text(encoding="utf-8"))
     return {
         "project": proj.name, "rev": status["rev"], "status": status["status"],
         "gates": status["gates"], "erc": erc, "drc": drc,
         "unconnected_nets": nets, "open_warnings": warnings, "silk_warnings": silk,
+        "netclass": netclass,
         "note": "reports are from the last run_erc/run_drc; a stale gate means the file changed since",
     }
 
