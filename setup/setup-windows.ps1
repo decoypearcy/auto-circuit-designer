@@ -431,8 +431,9 @@ function Confirm-KiCad {
             throw ("Could not download KiCad $ver. If it is not published yet, rerun with -KiCadVersion " + $Pins['kicad.fallback_version'])
         }
         Assert-Signed $dest $Pins['kicad.signer'] 'KiCad'
+        # KiCad uses NsisMultiUser: silent mode needs /allusers (or /currentuser), else exit 666660.
         # NSIS: /D= must be the last argument and is not quoted, even with spaces.
-        $kargs = '/S'
+        $kargs = '/S /allusers'
         if ($dir) { $kargs += " /D=$dir" }
         $code = Start-Elevated $dest $kargs
         if ($code -ne 0) { throw "KiCad installer exit code $code" }
