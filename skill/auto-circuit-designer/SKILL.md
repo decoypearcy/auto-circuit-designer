@@ -176,6 +176,7 @@ Preview: <board view>
 
 ### Restore
 - `acd list_backups`, show Andrew the choices, and on his pick `acd restore_backup`. It saves a pre-restore backup first.
+- Backups hold the state before a change, so an `approved` backup is the design just before approval, with no approval record. The approved state itself is in `releases/rev-X/project.zip`, which is what `acd new_revision` starts from.
 
 ## When something fails
 - kicad server tool errors: retry once, then report the exact error and stop. Do not work around the server by editing KiCad files directly.
