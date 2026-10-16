@@ -105,6 +105,41 @@ def netclass_check(pro_path: Path, pcb_path: Path) -> dict[str, Any]:
             "classes_without_nets": empty, "narrow_tracks": narrow}
 
 
+def required_width(table: list[dict[str, Any]], current_a: float) -> float:
+    """Minimum track width for a current, from the profile tracks.power_width_table."""
+    rows = sorted((float(r["up_to_a"]), float(r["width_mm"])) for r in table)
+    for limit, width in rows:
+        if current_a <= limit + TOL:
+            return width
+    raise AcdError(f"current above {rows[-1][0]:g} A: ask Andrew for a width")
+
+
+def class_width_failures(spec_classes: Any, widths: dict[str, float],
+                         table: list[dict[str, Any]]) -> list[str]:
+    """Spec net classes whose .kicad_pro class width is below the width their current needs."""
+    out: list[str] = []
+    for c in spec_classes or []:
+        if not isinstance(c, dict) or c.get("current_a") in (None, ""):
+            continue
+        name = str(c.get("name", ""))
+        try:
+            amps = float(c["current_a"])
+        except (TypeError, ValueError):
+            out.append(f"class {name}: current_a {c['current_a']!r} is not a number")
+            continue
+        try:
+            need = required_width(table, amps)
+        except AcdError as exc:
+            out.append(f"class {name} {amps:g} A: {exc}")
+            continue
+        have = widths.get(name)
+        if have is None:
+            out.append(f"class {name} ({amps:g} A) is not in the .kicad_pro net classes")
+        elif have + TOL < need:
+            out.append(f"class {name} {have:g} mm vs {need:g} mm needed for {amps:g} A")
+    return out
+
+
 # -- BOM flags ---------------------------------------------------------------
 _INSTANCE_RE = re.compile(r'\(symbol\s*\(lib_id\s+"([^"]+)"\)')
 

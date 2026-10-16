@@ -155,18 +155,34 @@ def require_unlocked(project: Project) -> None:
 # -- zipping --------------------------------------------------------------
 def project_files(root: Path) -> list[Path]:
     """Files that go into backups and project.zip."""
-    return [p for p in _walk(root) if not _is_lock(p.name) and not p.name.endswith(".tmp")]
+    files = [p for p in _walk(root) if not _is_lock(p.name) and not p.name.endswith(".tmp")]
+    return sorted(files, key=lambda p: p.relative_to(root).as_posix())
 
 
-def make_zip(root: Path, dest: Path) -> int:
+def make_zip(root: Path, dest: Path, date_time: tuple[int, ...] | None = None) -> int:
+    """Zip the project files. With date_time the zip is reproducible: sorted entries,
+    a fixed entry timestamp and fixed attributes (same files -> same bytes)."""
     tmp = dest.with_name(dest.name + ".tmp")
     n = 0
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in project_files(root):
-            zf.write(p, p.relative_to(root).as_posix())
+            arc = p.relative_to(root).as_posix()
+            if date_time is None:
+                zf.write(p, arc)
+            else:
+                write_fixed(zf, arc, p.read_bytes(), date_time)
             n += 1
     os.replace(tmp, dest)
     return n
+
+
+def write_fixed(zf: zipfile.ZipFile, arcname: str, data: bytes, date_time: tuple[int, ...]) -> None:
+    """Add one entry with a fixed timestamp and attributes (reproducible zips)."""
+    info = zipfile.ZipInfo(arcname, date_time=date_time[:6])
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = 0o644 << 16
+    zf.writestr(info, data)
 
 
 def safe_member_target(root: Path, member: str) -> Path | None:

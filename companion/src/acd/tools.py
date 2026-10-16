@@ -94,8 +94,9 @@ def confirm_spec(project: str) -> dict[str, Any]:
         raise AcdError(f"spec/circuit-spec.yaml is not valid YAML: {exc}") from exc
     if not data:
         raise AcdError("spec/circuit-spec.yaml is empty; write the spec before confirming it")
+    backup = bk.create_backup(proj, "spec")  # state going in, before the gate record changes
     gate = gt.set_gate(proj, "spec_confirmed", True, "spec confirmed by user")
-    return {"gate": "spec_confirmed", **gate}
+    return {"gate": "spec_confirmed", **gate, "backup": backup["backup"]}
 
 
 def register_part(lib_id: str, mpn: str, manufacturer: str, datasheet: str,
@@ -108,11 +109,16 @@ def verify_part(lib_id: str, verified_by: str) -> dict[str, Any]:
     return registry.verify_part(Settings.from_env(), lib_id, verified_by)
 
 
+def _no_datasheet(value: Any) -> bool:
+    return str(value or "").strip().lower() in ("", "~", "-", "none")
+
+
 def check_parts(project: str) -> dict[str, Any]:
     from .sexpr import symbol_lib_ids
     settings, proj, cli = _ctx(project)
     proj.require_file(proj.sch, proj.sch.name)
     sch_hash = proj.file_hash(proj.sch)
+    backup = bk.create_backup(proj, "schematic")  # before the gate record (and bom-check.csv) change
     rows = export_bom_rows(cli, proj.sch, proj.reports / "bom-check.csv")
     lib_ids = symbol_lib_ids(proj.sch)
     reg = registry.load(settings)
@@ -129,9 +135,14 @@ def check_parts(project: str) -> dict[str, Any]:
                 problems.append(f"{lib_id} is not in the parts registry")
             elif not entry.get("verified"):
                 problems.append(f"{lib_id} is registered but not verified")
+            if entry is not None and _no_datasheet(entry.get("datasheet")):
+                problems.append(f"{lib_id} has no datasheet in the parts registry")
         for field in ("Manufacturer", "MPN"):
             if not (row.get(field) or "").strip():
                 problems.append(f"missing {field} field")
+        if _no_datasheet(row.get("Datasheet")):  # SC-3: every BOM part, stock passives included
+            problems.append("missing Datasheet field (set it on the schematic symbol; "
+                            "for a passive use the manufacturer's series datasheet URL)")
         if problems:
             failures.append({"reference": ref, "lib_id": lib_id or "", "problems": "; ".join(problems)})
     passed = not failures
@@ -139,7 +150,7 @@ def check_parts(project: str) -> dict[str, Any]:
               else f"{len(failures)} of {len(rows)} BOM parts failed")
     gt.set_gate(proj, "parts_verified", passed, detail, hash_value=sch_hash)
     return {"gate": "parts_verified", "passed": passed, "parts_checked": len(rows),
-            "failures": failures}
+            "failures": failures, "backup": backup["backup"]}
 
 
 # -- ERC / DRC --------------------------------------------------------------
@@ -147,6 +158,7 @@ def run_erc(project: str) -> dict[str, Any]:
     _, proj, cli = _ctx(project)
     proj.require_file(proj.sch, proj.sch.name)
     sch_hash = proj.file_hash(proj.sch)
+    backup = bk.create_backup(proj, "schematic")  # before cli.erc, so the state going in is saved
     out = proj.reports / "erc.json"
     proj.reports.mkdir(exist_ok=True)
     out.unlink(missing_ok=True)
@@ -155,13 +167,14 @@ def run_erc(project: str) -> dict[str, Any]:
     passed = summary["errors"] == 0
     gt.set_gate(proj, "erc_clean", passed, f"{summary['errors']} errors, {summary['warnings']} warnings",
                 hash_value=sch_hash)
-    return {"gate": "erc_clean", "passed": passed, **summary}
+    return {"gate": "erc_clean", "passed": passed, **summary, "backup": backup["backup"]}
 
 
 def run_drc(project: str) -> dict[str, Any]:
-    _, proj, cli = _ctx(project)
+    settings, proj, cli = _ctx(project)
     proj.require_file(proj.pcb, proj.pcb.name)
     pcb_hash = proj.file_hash(proj.pcb)
+    backup = bk.create_backup(proj, "routed")  # before cli.drc and the gate records
     out = proj.reports / "drc.json"
     proj.reports.mkdir(exist_ok=True)
     out.unlink(missing_ok=True)
@@ -170,15 +183,45 @@ def run_drc(project: str) -> dict[str, Any]:
     nc = _netclass_check(proj)
     summary["netclass_check"] = nc
     empty = len(nc["classes_without_nets"])
-    drc_ok = summary["errors"] == 0 and empty == 0
+    reasons: list[str] = []
+    if nc["narrow_tracks"]:
+        total = sum(r["segments"] for r in nc["narrow_tracks"].values())
+        which = ", ".join(f"{net} {r['min_width']:g} mm vs class {r['class_width']:g} mm"
+                          for net, r in nc["narrow_tracks"].items())
+        reasons.append(f"{total} narrow tracks ({which})")
+    reasons += _class_current_failures(settings, proj)
+    summary["gate_failures"] = reasons
+    drc_ok = summary["errors"] == 0 and empty == 0 and not reasons
     routed = summary["unconnected"] == 0
-    gt.set_gate(proj, "drc_clean", drc_ok,
-                f"{summary['errors']} errors (incl. {summary['parity_errors']} parity), "
-                f"{empty} net classes without nets, "
-                f"{summary['warnings']} warnings", hash_value=pcb_hash)
+    detail = (f"{summary['errors']} errors (incl. {summary['parity_errors']} parity), "
+              f"{empty} net classes without nets, {summary['warnings']} warnings")
+    if reasons:
+        detail += "; " + "; ".join(reasons)
+    gt.set_gate(proj, "drc_clean", drc_ok, detail, hash_value=pcb_hash)
     gt.set_gate(proj, "unrouted_zero", routed, f"{summary['unconnected']} unconnected items",
                 hash_value=pcb_hash)
-    return {"gates": {"drc_clean": drc_ok, "unrouted_zero": routed}, **summary}
+    return {"gates": {"drc_clean": drc_ok, "unrouted_zero": routed}, **summary,
+            "backup": backup["backup"]}
+
+
+def _class_current_failures(settings: Settings, proj: Project) -> list[str]:
+    """Spec net classes (name, nets, current_a) whose .kicad_pro width is below the
+    width the profile table requires for that current (SC-6)."""
+    if not proj.spec.is_file() or not proj.pro.is_file():
+        return []
+    try:
+        data = yaml.safe_load(proj.spec.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise AcdError(f"spec/circuit-spec.yaml is not valid YAML: {exc}") from exc
+    classes = [c for c in (data.get("net_classes") or [] if isinstance(data, dict) else [])
+               if isinstance(c, dict) and c.get("current_a") not in (None, "")]
+    if not classes:
+        return []
+    table = get(load_profile(settings.profile_path), "tracks.power_width_table")
+    if not table:
+        raise AcdError("rule profile has no tracks.power_width_table (needed for net class current_a)")
+    widths = boardcheck.load_netclasses(proj.pro)[0]
+    return boardcheck.class_width_failures(classes, widths, table)
 
 
 def _netclass_check(proj: Project) -> dict[str, Any]:
@@ -272,6 +315,7 @@ def approve(project: str, approver: str, note: str = "") -> dict[str, Any]:
         detail = "; ".join(f"{g}: {status['gates'][g]['detail']}" for g in bad)
         raise AcdError(f"cannot approve rev {rev['rev']}: gates not passed or stale - {detail}")
     sch_h, pcb_h = proj.file_hash(proj.sch), proj.file_hash(proj.pcb)
+    backup_info = bk.create_backup(proj, "approved")  # state going in, before any approval record
     entry = {"rev": rev["rev"], "approver": approver.strip(), "date": now_iso(),
              "note": note, "sch_sha256": sch_h, "pcb_sha256": pcb_h}
     approvals = proj.read_json("records/approvals.json")
@@ -283,7 +327,6 @@ def approve(project: str, approver: str, note: str = "") -> dict[str, Any]:
         if r["rev"] == rev["rev"]:
             r["status"] = "approved"
     proj.write_json("records/revisions.json", revs)
-    backup_info = bk.create_backup(proj, "approved")
     return {"rev": rev["rev"], "approval": entry, "backup": backup_info["backup"]}
 
 
@@ -309,7 +352,7 @@ def export_release(project: str) -> dict[str, Any]:
         raise AcdError(f"{' and '.join(changed)} changed since approval of rev {rev['rev']}; "
                        "restore the approved files or start a new revision")
     profile = load_profile(settings.profile_path)
-    result = _export_release(proj, cli, profile, rev["rev"], sch_h, pcb_h)
+    result = _export_release(proj, cli, profile, rev["rev"], sch_h, pcb_h, appr["date"])
     return {"rev": rev["rev"], **result}
 
 

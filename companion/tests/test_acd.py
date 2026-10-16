@@ -519,6 +519,55 @@ PCB_TRACKS = """(kicad_pcb (version 20250114)
 """
 
 
+PCB_WIDE = """(kicad_pcb (version 20250114)
+  (net 0 "")
+  (net 1 "VIN")
+  (segment (start 0 0) (end 1 0) (width 1.0) (layer "F.Cu") (net "VIN") (uuid "a"))
+)
+"""
+
+
+def _spec_classes(proj, current_a):
+    (proj / "spec" / "circuit-spec.yaml").write_text(
+        "name: demo\nnet_classes:\n  - name: Power\n    nets: [VIN]\n"
+        f"    current_a: {current_a}\n", encoding="utf-8")
+
+
+def _power_board(proj, class_width, track_width):
+    pro = json.loads((proj / "demo.kicad_pro").read_text())
+    pro["net_settings"]["classes"] = [{"name": "Default", "track_width": 0.25},
+                                      {"name": "Power", "track_width": class_width}]
+    pro["net_settings"]["netclass_assignments"] = {"VIN": ["Power"]}
+    (proj / "demo.kicad_pro").write_text(json.dumps(pro))
+    (proj / "demo.kicad_pcb").write_text(PCB_WIDE.replace("(width 1.0)", f"(width {track_width})"))
+
+
+def test_net_class_width_must_meet_spec_current(proj):
+    _spec_classes(proj, 2.0)  # 2 A needs 1.0 mm
+    _power_board(proj, class_width=0.5, track_width=0.5)
+    res = tools.run_drc("demo")
+    assert res["gates"]["drc_clean"] is False and res["netclass_check"]["narrow_tracks"] == {}
+    detail = tools.gate_status("demo")["gates"]["drc_clean"]["detail"]
+    assert "class Power 0.5 mm vs 1 mm needed for 2 A" in detail
+    _power_board(proj, class_width=1.0, track_width=1.0)
+    assert tools.run_drc("demo")["gates"]["drc_clean"] is True
+
+
+def test_net_class_current_above_table_asks_andrew(proj):
+    _spec_classes(proj, 3.5)
+    _power_board(proj, class_width=2.0, track_width=2.0)
+    assert tools.run_drc("demo")["gates"]["drc_clean"] is False
+    assert "current above 3 A: ask Andrew for a width" in tools.gate_status("demo")["gates"]["drc_clean"]["detail"]
+    _spec_classes(proj, 3.0)  # exactly 3 A -> 1.5 mm, class 2.0 passes
+    assert tools.run_drc("demo")["gates"]["drc_clean"] is True
+
+
+def test_required_width_table_from_profile():
+    from acd.boardcheck import required_width
+    table = load_profile(DEFAULT_PROFILE)["tracks"]["power_width_table"]
+    assert [required_width(table, a) for a in (0.2, 1.0, 1.5, 2.0, 3.0)] == [0.5, 0.5, 1.0, 1.0, 1.5]
+
+
 def _pro_with_power(proj, assignments=None, patterns=None):
     pro = json.loads((proj / "demo.kicad_pro").read_text())
     ns = pro.setdefault("net_settings", {})
@@ -536,7 +585,10 @@ def test_netclass_check_flags_narrow_tracks_and_resolves_net_codes(proj):
     assert nc["classes"]["Power"] == ["VIN"] and nc["classes_without_nets"] == []
     assert nc["narrow_tracks"]["VIN"] == {"class": "Power", "class_width": 0.5,
                                           "min_width": 0.25, "segments": 2}
-    assert "LED_A" not in nc["narrow_tracks"] and res["gates"]["drc_clean"]
+    assert "LED_A" not in nc["narrow_tracks"]
+    assert res["gates"]["drc_clean"] is False  # any narrow track fails the gate (no neck-down exemption)
+    detail = tools.gate_status("demo")["gates"]["drc_clean"]["detail"]
+    assert "2 narrow tracks (VIN 0.25 mm vs class 0.5 mm)" in detail
     assert tools.review_summary("demo")["netclass"]["narrow_tracks"]["VIN"]["segments"] == 2
 
 
@@ -547,6 +599,7 @@ def test_netclass_with_no_nets_fails_drc_gate(proj):
     assert res["netclass_check"]["classes_without_nets"] == ["Power"]
     assert not res["gates"]["drc_clean"]
     _pro_with_power(proj, patterns=[{"netclass": "Power", "pattern": "/VIN"}])
+    (proj / "demo.kicad_pcb").write_text(PCB_WIDE)
     assert tools.run_drc("demo")["gates"]["drc_clean"]
 
 
@@ -577,3 +630,123 @@ def test_mcp_backups_folder_is_not_backed_up(proj):
     name = tools.backup("demo", "manual")["backup"]
     with zipfile.ZipFile(proj / "backups" / name) as zf:
         assert not any(n.startswith(".mcp-backups") for n in zf.namelist())
+
+
+# ------------------------------------------------- datasheet (SC-3)
+def test_check_parts_requires_datasheet_on_every_part(proj):
+    register_and_verify()
+    for blank in ("", "  ", "~", "-", "None"):
+        write_sch(proj / "demo.kicad_sch", sym("U1"),
+                  sym("R1", "Device:R", "10k", "R_0805", "Yageo", "RC", datasheet=blank))
+        res = tools.check_parts("demo")
+        assert not res["passed"], blank
+        assert [f["reference"] for f in res["failures"]] == ["R1"]  # stock-accepted part still needs one
+        assert "missing Datasheet field" in res["failures"][0]["problems"]
+    write_sch(proj / "demo.kicad_sch", sym("U1"),
+              sym("R1", "Device:R", "10k", "R_0805", "Yageo", "RC", datasheet=None))
+    assert not tools.check_parts("demo")["passed"]
+    write_sch(proj / "demo.kicad_sch", sym("U1"),
+              sym("R1", "Device:R", "10k", "R_0805", "Yageo", "RC", datasheet="https://example.com/rc.pdf"))
+    assert tools.check_parts("demo")["passed"]
+
+
+def test_check_parts_requires_registry_datasheet(proj):
+    tools.register_part("acd:LM1117-3.3", "LM1117MPX-3.3", "TI", "", "SOT-223", "")
+    tools.verify_part("acd:LM1117-3.3", "Andrew")
+    res = tools.check_parts("demo")
+    assert not res["passed"] and "no datasheet in the parts registry" in res["failures"][0]["problems"]
+
+
+# ------------------------------------------------- backup before change
+def _stage_backups(proj, stage):
+    return sorted(p for p in (proj / "backups").iterdir() if p.name.endswith(f"_{stage}.zip"))
+
+
+def _backup_gates(zpath):
+    with zipfile.ZipFile(zpath) as zf:
+        return json.loads(zf.read("records/revisions.json"))[0]["gates"]
+
+
+def test_gate_tools_back_up_before_the_gate_record_changes(proj):
+    register_and_verify()
+    steps = [("spec", lambda: tools.confirm_spec("demo"), ["spec_confirmed"]),
+             ("schematic", lambda: tools.check_parts("demo"), ["parts_verified"]),
+             ("schematic", lambda: tools.run_erc("demo"), ["erc_clean"]),
+             ("routed", lambda: tools.run_drc("demo"), ["drc_clean", "unrouted_zero"])]
+    for stage, call, new_gates in steps:
+        before = _stage_backups(proj, stage)
+        res = call()
+        after = _stage_backups(proj, stage)
+        assert len(after) == len(before) + 1 and res["backup"] in {p.name for p in after}
+        taken = _backup_gates(proj / "backups" / res["backup"])
+        assert all(g not in taken for g in new_gates), (stage, taken)
+        assert all(g in tools.gate_status("demo")["gates"] for g in new_gates)
+    # the schematic backup of check_parts predates its own gate but holds earlier ones
+    assert "spec_confirmed" in _backup_gates(proj / "backups" / sorted(
+        p.name for p in _stage_backups(proj, "schematic"))[0])
+
+
+def test_approve_backs_up_before_writing_approval(proj):
+    pass_all_gates()
+    res = tools.approve("demo", "Andrew", "ok")
+    z = proj / "backups" / res["backup"]
+    assert res["backup"].endswith("_approved.zip") and z.is_file()
+    with zipfile.ZipFile(z) as zf:
+        assert json.loads(zf.read("records/approvals.json")) == []
+        revs = json.loads(zf.read("records/revisions.json"))
+    assert revs[0]["status"] == "draft" and "approved" not in revs[0]["gates"]
+    assert json.loads((proj / "records" / "approvals.json").read_text())[0]["approver"] == "Andrew"
+
+
+def test_gate_backups_are_pruned_per_stage(proj, monkeypatch):
+    monkeypatch.setenv("ACD_BACKUP_KEEP", "2")
+    register_and_verify()
+    for _ in range(4):
+        tools.run_erc("demo")
+    assert len(_stage_backups(proj, "schematic")) == 2
+
+
+def test_failed_gate_precondition_makes_no_backup(env):
+    tools.init_project("blank")
+    with pytest.raises(AcdError):
+        tools.confirm_spec("blank")  # empty spec: nothing changes, so nothing is backed up
+    assert list((env["projects"] / "blank" / "backups").iterdir()) == []
+
+
+# ------------------------------------------------- reproducible export (SC-12)
+def test_normalise_dates_only_changes_date_values():
+    from acd.release import normalise_dates
+    d = "2026-10-16T09:30:00+11:00"
+    a = ("G04 #@! TF.CreationDate,2025-01-01T01:02:03+00:00*\n%TF.CreationDate,2025-01-01T01:02:03+00:00*%\n"
+         "G04 Created by KiCad (PCBNEW 7) date 2025-01-01 01:02:03*\nX1Y1D02*\n")
+    out = normalise_dates(a, d)
+    assert out == (f"G04 #@! TF.CreationDate,{d}*\n%TF.CreationDate,{d}*%\n"
+                   f"G04 Created by KiCad (PCBNEW 7) date {d}*\nX1Y1D02*\n")
+    drl = "M48\n; DRILL file {KiCad 10.0.1} date Thu 01 Jan 2025\n; #@! TF.CreationDate,2025-01-01T01:02:03+00:00\nMETRIC\n"
+    assert normalise_dates(drl, d) == (f"M48\n; DRILL file {{KiCad 10.0.1}} date {d}\n"
+                                       f"; #@! TF.CreationDate,{d}\nMETRIC\n")
+    job = '{"Header": {"CreationDate": "2025-01-01T01:02:03+00:00", "Other": "keep"}, "FileDate": "x"}'
+    assert normalise_dates(job, d) == (f'{{"Header": {{"CreationDate": "{d}", "Other": "keep"}}, "FileDate": "{d}"}}')
+    assert normalise_dates(out, d) == out  # idempotent
+
+
+def test_reexport_of_same_approved_rev_is_byte_identical(approved, env, monkeypatch):
+    monkeypatch.setenv("FAKE_GBRJOB", "1")
+    rel = approved / "releases"
+    tools.export_release("demo")
+    (rel / "rev-A").rename(rel / "first")
+    tools.export_release("demo")
+    (rel / "rev-A").rename(rel / "second")
+    first = {p.relative_to(rel / "first").as_posix(): sha256_file(p) for p in (rel / "first").rglob("*") if p.is_file()}
+    second = {p.relative_to(rel / "second").as_posix(): sha256_file(p) for p in (rel / "second").rglob("*") if p.is_file()}
+    assert first == second and any(n.endswith(".gbrjob") for n in first) and "manifest.json" in first
+    appr_date = json.loads((approved / "records" / "approvals.json").read_text())[0]["date"]
+    gerber = next((rel / "second" / "gerbers").glob("*.gbr")).read_text()
+    assert f"TF.CreationDate,{appr_date}*" in gerber
+    with zipfile.ZipFile(rel / "second" / "project.zip") as zf:
+        stamps = {i.date_time for i in zf.infolist()}
+        assert len(stamps) == 1 and stamps.pop()[0] == int(appr_date[:4])
+        assert zf.namelist() == sorted(zf.namelist())
+    shutil_target = rel / "rev-A"
+    (rel / "second").rename(shutil_target)
+    assert tools.verify_release("demo", "A")["ok"]

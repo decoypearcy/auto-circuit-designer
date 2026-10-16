@@ -17,6 +17,11 @@ tracks:
   default_width_mm: 0.25
   min_width_mm: 0.15         # pcbway_min 0.10 (4 mil)
   power_width: by_net_class  # sized from net class current
+  power_width_table:         # SC-6: net class current -> minimum track width
+    - {up_to_a: 1.0, width_mm: 0.5}
+    - {up_to_a: 2.0, width_mm: 1.0}
+    - {up_to_a: 3.0, width_mm: 1.5}
+                             # above the last row: ask Andrew for a width
 
 clearance:
   default_mm: 0.20

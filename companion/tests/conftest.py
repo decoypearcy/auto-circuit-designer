@@ -18,12 +18,14 @@ SCH_TEMPLATE = """(kicad_sch (version 20250114) (generator "test")
 
 
 def sym(ref, lib_id="acd:LM1117-3.3", value="LM1117", footprint="Package_TO_SOT_SMD:SOT-223",
-        mfr="TI", mpn="LM1117MPX-3.3", extra=""):
+        mfr="TI", mpn="LM1117MPX-3.3", extra="", datasheet="http://ds"):
     props = f'(property "Reference" "{ref}") (property "Value" "{value}") (property "Footprint" "{footprint}")'
     if mfr is not None:
         props += f' (property "Manufacturer" "{mfr}")'
     if mpn is not None:
         props += f' (property "MPN" "{mpn}")'
+    if datasheet is not None:
+        props += f' (property "Datasheet" "{datasheet}")'
     return f'(symbol (lib_id "{lib_id}") {props} {extra})'
 
 

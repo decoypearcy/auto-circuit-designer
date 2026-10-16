@@ -9,6 +9,10 @@ Behaviour knobs (environment variables):
   FAKE_PARITY_ERRORS  number of schematic-parity errors (default 0)
   FAKE_UNCONNECTED    number of unconnected items (default 0)
   FAKE_FAIL           if set, every call exits with code 3
+  FAKE_GBRJOB         if set, the gerbers export also writes a .gbrjob file
+
+Gerber, drill and job files carry the current time (with microseconds) in the same
+header lines real KiCad writes, so two exports differ unless the dates are normalised.
 """
 
 import csv
@@ -16,6 +20,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -24,6 +29,10 @@ def opt(argv, *names):
         if n in argv:
             return argv[argv.index(n) + 1]
     return None
+
+
+def stamp():
+    return datetime.now().astimezone().isoformat()
 
 
 def violations(n, sev, kind):
@@ -105,15 +114,23 @@ def main(argv):
         stem = Path(argv[-1]).stem
         for layer in opt(argv, "-l", "--layers").split(","):
             ext = ".gbr" if "--no-protel-ext" in argv else ".gtl"
+            ts = stamp()
             (out / f"{stem}-{layer.replace('.', '_')}{ext}").write_text(
-                "G04 fake gerber*\nM02*\n", encoding="utf-8")
+                f"G04 fake gerber*\nG04 #@! TF.CreationDate,{ts}*\n"
+                f"%TF.CreationDate,{ts}*%\nM02*\n", encoding="utf-8")
+        if os.environ.get("FAKE_GBRJOB"):
+            (out / f"{stem}-job.gbrjob").write_text(json.dumps(
+                {"Header": {"GenerationSoftware": {"Vendor": "KiCad"}, "CreationDate": stamp()}},
+                indent=2), encoding="utf-8")
     elif cmd == ["pcb", "export", "drill"]:
         out = Path(opt(argv, "-o", "--output"))
         out.mkdir(parents=True, exist_ok=True)
         stem = Path(argv[-1]).stem
         names = ["PTH", "NPTH"] if "--excellon-separate-th" in argv else ["all"]
         for nm in names:
-            (out / f"{stem}-{nm}.drl").write_text("M48\nMETRIC\nM30\n", encoding="utf-8")
+            (out / f"{stem}-{nm}.drl").write_text(
+                f"M48\n; DRILL file {{KiCad 10.0.1}} date {stamp()}\n"
+                f"; #@! TF.CreationDate,{stamp()}\nMETRIC\nM30\n", encoding="utf-8")
     elif cmd == ["pcb", "export", "pos"]:
         Path(opt(argv, "-o", "--output")).write_text("Ref,Val,PosX,PosY\nR1,10k,1,2\n", encoding="utf-8")
     else:
