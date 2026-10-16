@@ -25,7 +25,7 @@ Versions were checked on 2026-10-16 and are listed in `versions.yaml`.
 7. Fully quit Claude Desktop (right-click the tray icon, Quit), then open it again.
 8. If the script reports a problem, fix it using Troubleshooting below and run the script again. It skips anything already done.
 
-Options: `-NoPrompt` (use defaults, no questions), `-ProjectsRoot` and `-LibraryRoot` (give the folders directly), `-KiCadVersion <x.y.z>` (install a different KiCad 10 patch), `-SkipConfigMerge` (do not touch the Claude Desktop config).
+Options: `-NoPrompt` (use defaults, no questions), `-ProjectsRoot` and `-LibraryRoot` (give the folders directly), `-KiCadVersion <x.y.z>` (install a different KiCad 10 patch), `-SkipConfigMerge` (do not touch the Claude Desktop config), `-InstallRoot <folder>` (install KiCad, Node.js, Java and git under that folder, for example `"D:\Program Files"`, using the official installers instead of winget; uv, Freerouting and the base MCP stay in your user profile).
 
 ## What gets installed (pinned versions)
 

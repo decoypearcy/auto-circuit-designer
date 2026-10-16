@@ -97,4 +97,6 @@ git:
   winget_id: "Git.Git"
   source_url: "https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.3"
   exe_url: "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.3/Git-2.55.0.3-64-bit.exe"
+  # Authenticode signer of Git for Windows installers.
+  signer: "Johannes Schindelin"
   winget_source_url: "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/g/Git/Git/2.55.0.3/Git.Git.installer.yaml"

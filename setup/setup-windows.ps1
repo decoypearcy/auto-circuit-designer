@@ -24,6 +24,12 @@
 .PARAMETER SkipConfigMerge
   Do everything except editing claude_desktop_config.json.
 
+.PARAMETER InstallRoot
+  Install KiCad, Node.js, Java and git under this folder (for example "D:\Program Files")
+  instead of the Windows defaults. winget is skipped for those four and the official
+  installers are used with an install-folder argument (same checksum and signature checks).
+  uv, Freerouting and the base MCP stay in the user profile (they are per-user tools).
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\setup\setup-windows.ps1
 #>
@@ -33,7 +39,8 @@ param(
     [string]$LibraryRoot,
     [switch]$NoPrompt,
     [string]$KiCadVersion,
-    [switch]$SkipConfigMerge
+    [switch]$SkipConfigMerge,
+    [string]$InstallRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -176,6 +183,21 @@ function Save-Download([string]$Url, [string]$Dest) {
 
 function Test-Winget { return [bool](Get-ToolPath 'winget') }
 
+# With -InstallRoot the program installs bypass winget so the folder can be set explicitly.
+function Get-InstallDir([string]$Sub) {
+    if (-not $InstallRoot) { return $null }
+    return (Join-Path $InstallRoot $Sub)
+}
+
+function Assert-Signed([string]$Path, [string]$Signer, [string]$What) {
+    $sig = Get-AuthenticodeSignature -FilePath $Path
+    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike ('*' + $Signer + '*')) {
+        Remove-Item -LiteralPath $Path -Force
+        throw "$What installer signature check failed. File deleted."
+    }
+    Write-Good "$What installer signature valid ($Signer)"
+}
+
 # Returns $true if winget installed the package. Never throws.
 function Install-WithWinget([string]$Id, [string]$Version) {
     if (-not (Test-Winget)) { Write-Warn2 'winget is not available on this PC.'; return $false }
@@ -220,7 +242,9 @@ function Get-MajorVersion([string]$Text) {
 # Tool discovery
 # ---------------------------------------------------------------------------
 function Find-KiCad {
-    $roots = @(
+    $roots = @()
+    if ($InstallRoot) { $roots += (Join-Path $InstallRoot 'KiCad\10.0') }
+    $roots += @(
         (Join-Path $env:ProgramFiles 'KiCad\10.0'),
         (Join-Path ${env:ProgramFiles(x86)} 'KiCad\10.0'),
         (Join-Path $env:LOCALAPPDATA 'Programs\KiCad\10.0')
@@ -255,7 +279,9 @@ function Find-Java([int]$MinMajor) {
     if (-not $good) {
         $cands = New-Object System.Collections.ArrayList
         if ($env:JAVA_HOME) { [void]$cands.Add((Join-Path $env:JAVA_HOME 'bin\java.exe')) }
-        $globs = @(
+        $globs = @()
+        if ($InstallRoot) { $globs += (Join-Path $InstallRoot 'Eclipse Adoptium\*\bin\java.exe') }
+        $globs += @(
             (Join-Path $env:ProgramFiles 'Eclipse Adoptium\*\bin\java.exe'),
             (Join-Path $env:ProgramFiles 'Java\*\bin\java.exe'),
             (Join-Path $env:LOCALAPPDATA 'Programs\Eclipse Adoptium\*\bin\java.exe')
@@ -284,11 +310,16 @@ function Confirm-Git {
         Write-Good (Get-FirstLine $r.Output)
         Add-Result 'git' 'OK' (Get-FirstLine $r.Output); return
     }
-    $ok = Install-WithWinget $Pins['git.winget_id'] $ver
+    $dir = Get-InstallDir 'Git'
+    $ok = $false
+    if (-not $dir) { $ok = Install-WithWinget $Pins['git.winget_id'] $ver }
     if (-not $ok) {
         $dest = Join-Path $env:TEMP ("Git-$ver-64-bit.exe")
         Save-Download $Pins['git.exe_url'] $dest
-        $code = Start-Elevated $dest '/VERYSILENT /NORESTART'
+        Assert-Signed $dest $Pins['git.signer'] 'Git'
+        $gargs = '/VERYSILENT /NORESTART'
+        if ($dir) { $gargs += " /DIR=`"$dir`"" }
+        $code = Start-Elevated $dest $gargs
         if ($code -ne 0) { throw "Git installer exit code $code" }
         Update-SessionPath
     }
@@ -311,9 +342,11 @@ function Confirm-Node {
         }
         Write-Warn2 ("node " + (Get-FirstLine $r.Output) + " is older than $min, installing $ver")
     }
-    $ok = Install-WithWinget $Pins['node.winget_id'] $ver
+    $dir = Get-InstallDir 'nodejs'
+    $ok = $false
+    if (-not $dir) { $ok = Install-WithWinget $Pins['node.winget_id'] $ver }
     if (-not $ok) {
-        Write-Info 'falling back to the official MSI'
+        Write-Info 'using the official MSI'
         $msiUrl = Expand-Url $Pins['node.msi_url'] $ver
         $dest = Join-Path $env:TEMP ("node-v$ver-x64.msi")
         Save-Download $msiUrl $dest
@@ -324,8 +357,10 @@ function Confirm-Node {
             if ($l -match ('^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($fileName) + '\s*$')) { $expected = $Matches[1].ToLower() }
         }
         if (-not $expected) { throw "No SHA-256 for $fileName in SHASUMS256.txt" }
-        if ((Get-FileSha256 $dest) -ne $expected) { throw 'Node MSI SHA-256 mismatch. File deleted.' }
-        $code = Start-Elevated 'msiexec.exe' ("/i `"$dest`" /qn /norestart")
+        if ((Get-FileSha256 $dest) -ne $expected) { Remove-Item -LiteralPath $dest -Force; throw 'Node MSI SHA-256 mismatch. File deleted.' }
+        $margs = "/i `"$dest`" /qn /norestart"
+        if ($dir) { $margs += " INSTALLDIR=`"$dir\`"" }
+        $code = Start-Elevated 'msiexec.exe' $margs
         if ($code -ne 0 -and $code -ne 3010) { throw "Node MSI exit code $code" }
         Update-SessionPath
     }
@@ -339,13 +374,18 @@ function Confirm-Java {
     $min = [int]$Pins['java.min_major']
     $found = Find-Java $min
     if (-not $found.Good) {
-        $ok = Install-WithWinget $Pins['java.winget_id'] $Pins['java.winget_version']
+        $dir = Get-InstallDir ('Eclipse Adoptium\jre-' + $Pins['java.version'] + '-hotspot')
+        $ok = $false
+        if (-not $dir) { $ok = Install-WithWinget $Pins['java.winget_id'] $Pins['java.winget_version'] }
         if (-not $ok) {
-            Write-Info 'falling back to the Temurin MSI'
+            Write-Info 'using the Temurin MSI'
             $dest = Join-Path $env:TEMP 'temurin-jre-25.msi'
             Save-Download $Pins['java.msi_url'] $dest
-            if ((Get-FileSha256 $dest) -ne $Pins['java.msi_sha256'].ToLower()) { throw 'Temurin MSI SHA-256 mismatch.' }
-            $code = Start-Elevated 'msiexec.exe' ("/i `"$dest`" /qn /norestart")
+            if ((Get-FileSha256 $dest) -ne $Pins['java.msi_sha256'].ToLower()) { Remove-Item -LiteralPath $dest -Force; throw 'Temurin MSI SHA-256 mismatch. File deleted.' }
+            # FeatureMain + FeatureEnvironment (PATH). JAVA_HOME is deliberately not set, so other Java users are unaffected.
+            $margs = "/i `"$dest`" /qn /norestart ADDLOCAL=FeatureMain,FeatureEnvironment"
+            if ($dir) { $margs += " INSTALLDIR=`"$dir\`"" }
+            $code = Start-Elevated 'msiexec.exe' $margs
             if ($code -ne 0 -and $code -ne 3010) { throw "Temurin MSI exit code $code" }
         }
         Update-SessionPath
@@ -376,9 +416,11 @@ function Confirm-KiCad {
         $script:KiCad = $k
         return
     }
-    $ok = Install-WithWinget $Pins['kicad.winget_id'] $ver
+    $dir = Get-InstallDir 'KiCad\10.0'
+    $ok = $false
+    if (-not $dir) { $ok = Install-WithWinget $Pins['kicad.winget_id'] $ver }
     if (-not $ok) {
-        Write-Info 'falling back to the direct installer download'
+        Write-Info 'using the direct installer download'
         $dest = Join-Path $env:TEMP ("kicad-$ver-x86_64.exe")
         $got = $false
         foreach ($key in @('kicad.url_github', 'kicad.url_cern', 'kicad.url_aarnet', 'kicad.url_mit')) {
@@ -388,13 +430,11 @@ function Confirm-KiCad {
         if (-not $got) {
             throw ("Could not download KiCad $ver. If it is not published yet, rerun with -KiCadVersion " + $Pins['kicad.fallback_version'])
         }
-        $sig = Get-AuthenticodeSignature -FilePath $dest
-        if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike ('*' + $Pins['kicad.signer'] + '*')) {
-            Remove-Item -LiteralPath $dest -Force
-            throw 'KiCad installer signature check failed. File deleted.'
-        }
-        Write-Good 'installer signature valid'
-        $code = Start-Elevated $dest '/S'
+        Assert-Signed $dest $Pins['kicad.signer'] 'KiCad'
+        # NSIS: /D= must be the last argument and is not quoted, even with spaces.
+        $kargs = '/S'
+        if ($dir) { $kargs += " /D=$dir" }
+        $code = Start-Elevated $dest $kargs
         if ($code -ne 0) { throw "KiCad installer exit code $code" }
     }
     Update-SessionPath
