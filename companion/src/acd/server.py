@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import functools
+import traceback
+from pathlib import Path
+from typing import Any, Callable
+
 from . import tools
+from .config import AcdError
 
 try:  # official SDK 1.x
     from mcp.server.fastmcp import FastMCP
@@ -17,11 +23,30 @@ TOOL_NAMES = (
 )
 
 
+def wrap_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Return failures as a normal result so the caller sees the reason.
+
+    Without this FastMCP reports only "Error executing tool". functools.wraps keeps the
+    signature (inspect follows __wrapped__), so the input schema is unchanged.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except AcdError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - every failure must reach the caller
+            last = traceback.extract_tb(exc.__traceback__)[-1]
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                    "where": f"{Path(last.filename).name}:{last.lineno}"}
+    return wrapper
+
+
 def build_server() -> FastMCP:
     server = FastMCP("acd")
     for name in TOOL_NAMES:
         fn = getattr(tools, name)
-        server.tool(name=name)(fn)
+        server.tool(name=name)(wrap_tool(fn))
     return server
 
 

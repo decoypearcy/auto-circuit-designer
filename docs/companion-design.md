@@ -43,7 +43,7 @@ and `*-backups/` folders made by KiCad itself.
   symbols/acd.kicad_sym
   footprints/acd.pretty/
   3dmodels/
-  registry.json   { "<lib_id>": {mpn, manufacturer, datasheet, footprint, verified, verified_by, verified_date, notes} }
+  registry.json   { "<lib_id>": {"variants": [{mpn, manufacturer, datasheet, footprint, verified, verified_by, verified_date, notes}, ...]} }  (one variant per MPN; the old single-entry form is still read)
 ```
 `lib_id` is the KiCad symbol id, e.g. `acd:LM1117-3.3`.
 Stock symbols accepted without registry verification: `Device:R`, `Device:C`, `Device:L`
@@ -53,7 +53,7 @@ Every BOM part still needs `Manufacturer` and `MPN` fields except excluded parts
 ## Revision object
 ```json
 {"rev": "A", "parent": null, "created": "2026-10-16T12:30:00+11:00",
- "status": "draft|approved|superseded",
+ "status": "draft|approved",  "superseded_by": "<next rev, set on an approved parent by new_revision>",
  "gates": {"spec_confirmed": {...}, "parts_verified": {...}, "erc_clean": {...},
            "drc_clean": {...}, "unrouted_zero": {...}, "approved": {...}},
  "notes": ""}
@@ -82,8 +82,8 @@ if KiCad lock files are present (Andrew has the project open).
 | `apply_profile(project)` | Write the profile into `.kicad_pro` (JSON: board design_settings rules, default net class widths/clearance/via) and write `<name>.kicad_dru` for rules .kicad_pro cannot hold (copper to edge, silk sizes, annular ring). Backup first. |
 | `lock_check(project)` | List lock files. `{locked: bool, files: [...]}` |
 | `confirm_spec(project)` | Set gate 1. Call only after Andrew confirms the spec in chat. |
-| `register_part(lib_id, mpn, manufacturer, datasheet, footprint, notes)` | Add or update a registry entry with `verified: false`. |
-| `verify_part(lib_id, verified_by)` | Mark verified. Call only after Andrew signs off. |
+| `register_part(lib_id, mpn, manufacturer, datasheet, footprint, notes)` | Add or update the variant with that MPN (case-insensitive), `verified: false`. Other variants are untouched. |
+| `verify_part(lib_id, verified_by, mpn="")` | Mark the variant verified (mpn required when there are several). Call only after Andrew signs off. |
 | `check_parts(project)` | Export BOM via `kicad-cli sch export bom`, apply the registry rule, set gate 2, list failures. |
 | `run_erc(project)` | `kicad-cli sch erc --format json`, save report, set gate 3, return counts and the first 20 errors. |
 | `run_drc(project)` | `kicad-cli pcb drc --format json --schematic-parity`, save report, set gates 4 and 5, return counts, unconnected count and first 20 errors. |
@@ -91,11 +91,11 @@ if KiCad lock files are present (Andrew has the project open).
 | `gate_status(project)` | Gates with staleness. Read-only. |
 | `backup(project, stage)` | Zip to `backups/`, prune to ACD_BACKUP_KEEP per stage. Stages: spec, library, schematic, placement, routed, review, approved, pre-restore, manual; gate tools also use pre-parts, pre-erc and pre-drc (their own stages, so gate re-runs never prune hand backups; skipped when the design files match the newest backup of that stage). |
 | `list_backups(project)` | Newest first. |
-| `restore_backup(project, backup_name)` | Backup current state as `pre-restore`, then replace working files (never backups/ or releases/) with the zip contents. Resets gates to stale naturally via hashes. |
+| `restore_backup(project, backup_name, dry_run=False)` | dry_run lists would_restore, would_remove and would_rename and changes nothing. Otherwise backup current state as `pre-restore`, then replace working files (never backups/ or releases/) with the zip contents, returning removed and renamed. KiCad files named after an old folder name are restored under the current one. Resets gates to stale naturally via hashes. |
 | `approve(project, approver, note)` | Requires gates 1 to 5 passed and not stale. Records approval with file hashes, sets status approved, makes an `approved` backup. |
 | `export_release(project)` | Requires current rev approved and hashes unchanged since approval. Runs kicad-cli: gerbers (profile layers, no X2, no Protel extensions), drill (Excellon, mm, separate PTH/NPTH, absolute origin), BOM CSV (Reference, Value, Footprint, Manufacturer, MPN, Qty, grouped by value+footprint), pos only if profile centroid true. Writes `project.zip`, `rev-X_pcbway.zip`, `manifest.json`. Refuses if the release folder already exists. |
 | `verify_release(project, rev)` | Recompute manifest hashes; report mismatches (SC-12). |
-| `new_revision(project, from_rev)` | Requires from_rev approved. Mark it superseded, create next rev letter as draft with parent = from_rev, working files restored from the release `project.zip` if they differ. Approved release folders are never modified (SC-13). |
+| `new_revision(project, from_rev)` | Requires from_rev approved and not yet superseded. Set superseded_by on it (it stays approved), create next rev letter as draft with parent = from_rev, working files restored from the release `project.zip` if they differ. Approved release folders are never modified (SC-13). |
 
 ## kicad-cli
 Use the KiCad 10 CLI reference (https://docs.kicad.org/10.0/en/cli/cli.html) for exact flags.
@@ -107,3 +107,5 @@ ERC/DRC JSON, BOM CSV and dummy gerber/drill files. Cover: layout creation, lock
 after a file edit, approval refusal with failing or stale gates, export refusal without approval,
 backup prune count, restore with pre-restore backup, new revision immutability of the old release,
 manifest verification.
+
+All tools return `{"ok": false, "error": "..."}` on failure instead of raising (server.py wrap_tool), so the reason reaches Claude. On a non-draft revision, check_parts, run_erc and run_drc run without recording gates or writing reports/ (`recorded: false`); confirm_spec, apply_profile and fix_bom_flags refuse.

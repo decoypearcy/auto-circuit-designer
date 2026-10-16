@@ -124,21 +124,22 @@ def test_register_verify_and_check_parts(proj, env):
     assert [f["reference"] for f in res["failures"]] == ["U1"]  # R1 stock, TP1 excluded
     assert "not in the parts registry" in res["failures"][0]["problems"]
 
-    tools.register_part("acd:LM1117-3.3", "LM1117MPX-3.3", "TI", "http://ds", "SOT-223", "n")
+    tools.register_part("acd:LM1117-3.3", "LM1117MPX-3.3", "TI", "http://ds", "Package_TO_SOT_SMD:SOT-223", "n")
     reg = json.loads((env["library"] / "registry.json").read_text())
-    assert reg["acd:LM1117-3.3"]["verified"] is False
+    assert reg["acd:LM1117-3.3"]["variants"][0]["verified"] is False
     assert (env["library"] / "footprints" / "acd.pretty").is_dir()
     res = tools.check_parts("demo")
     assert not res["passed"] and "not verified" in res["failures"][0]["problems"]
 
     tools.verify_part("acd:LM1117-3.3", "Andrew")
     reg = json.loads((env["library"] / "registry.json").read_text())
-    assert reg["acd:LM1117-3.3"]["verified"] and reg["acd:LM1117-3.3"]["verified_by"] == "Andrew"
+    variant = reg["acd:LM1117-3.3"]["variants"][0]
+    assert variant["verified"] and variant["verified_by"] == "Andrew"
     assert tools.check_parts("demo")["passed"]
     assert gt.gate_status(Project(tools.Settings.from_env(), "demo"))["gates"]["parts_verified"]["effective"]
 
     # re-registering resets verification
-    tools.register_part("acd:LM1117-3.3", "LM1117MPX-3.3", "TI", "http://ds", "SOT-223", "changed")
+    tools.register_part("acd:LM1117-3.3", "LM1117MPX-3.3", "TI", "http://ds", "Package_TO_SOT_SMD:SOT-223", "changed")
     assert not tools.check_parts("demo")["passed"]
 
 
@@ -263,7 +264,7 @@ def test_approve_records_hashes_status_and_backup(approved):
     assert revs[0]["status"] == "approved" and revs[0]["gates"]["approved"]["passed"]
     assert any(b["stage"] == "approved" for b in tools.list_backups("demo")["backups"])
     assert tools.gate_status("demo")["gates"]["approved"]["effective"]
-    with pytest.raises(AcdError, match="not draft"):
+    with pytest.raises(AcdError, match="start a new revision"):
         tools.approve("demo", "Andrew", "again")
     with pytest.raises(AcdError, match="approver"):
         tools.approve("demo", " ", "")
@@ -458,7 +459,8 @@ def test_new_revision_keeps_old_release_immutable(approved):
 
     revs = json.loads((proj / "records" / "revisions.json").read_text())
     assert [r["rev"] for r in revs] == ["A", "B"]
-    assert revs[0]["status"] == "superseded" and revs[1]["status"] == "draft" and revs[1]["parent"] == "A"
+    assert revs[0]["status"] == "approved" and revs[0]["superseded_by"] == "B"  # parent record not rewritten
+    assert revs[1]["status"] == "draft" and revs[1]["parent"] == "A" and "superseded_by" not in revs[1]
     assert revs[1]["gates"] == {}
     assert json.loads((proj / "records" / "project.json").read_text())["current_rev"] == "B"
     assert tools.gate_status("demo")["rev"] == "B"
@@ -472,8 +474,8 @@ def test_new_revision_keeps_old_release_immutable(approved):
     after = {p.relative_to(rel).as_posix(): sha256_file(p) for p in rel.rglob("*") if p.is_file()}
     assert after == snapshot
     assert tools.verify_release("demo", "A")["ok"] and tools.verify_release("demo", "B")["ok"]
-    with pytest.raises(AcdError, match="only an approved revision"):
-        tools.new_revision("demo", "A")  # superseded
+    with pytest.raises(AcdError, match="already superseded by rev B"):
+        tools.new_revision("demo", "A")
 
 
 def pass_gates_b():
@@ -805,3 +807,211 @@ def test_reexport_of_same_approved_rev_is_byte_identical(approved, env, monkeypa
     shutil_target = rel / "rev-A"
     (rel / "second").rename(shutil_target)
     assert tools.verify_release("demo", "A")["ok"]
+
+
+# ------------------------------------------------- fix A: errors reach the caller
+def test_wrapped_tool_returns_acd_error_as_a_result(env):
+    from acd.server import wrap_tool
+    res = wrap_tool(tools.gate_status)("no-such-project")
+    assert res["ok"] is False and "no-such-project" in res["error"] and "where" not in res
+
+
+def test_wrapped_tool_reports_other_exceptions_with_location(env):
+    from acd.server import wrap_tool
+
+    def boom(project: str) -> dict:
+        return {}["missing"]
+    res = wrap_tool(boom)("x")
+    assert res["ok"] is False and res["error"].startswith("KeyError: ")
+    assert res["where"].startswith("test_acd.py:")
+
+
+def test_wrapped_tool_passes_results_through_and_keeps_signature(proj):
+    import inspect
+    from acd.server import wrap_tool
+    wrapped = wrap_tool(tools.gate_status)
+    assert wrapped("demo") == tools.gate_status("demo")
+    for name in ("gate_status", "verify_part", "restore_backup", "new_revision"):
+        assert inspect.signature(wrap_tool(getattr(tools, name))) == inspect.signature(getattr(tools, name))
+
+
+def test_server_tool_failure_is_a_normal_result(env):
+    import asyncio
+    from acd.server import build_server
+    res = asyncio.run(build_server().call_tool("gate_status", {"project": "no-such-project"}))
+    assert "no-such-project" in str(res) and "Error executing tool" not in str(res)
+
+
+# ------------------------------------------------- fix C: registry variants per lib_id
+def _led_board(proj, *rows):
+    write_sch(proj / "demo.kicad_sch", *rows)
+
+
+def test_old_format_registry_still_loads_and_passes(proj, env):
+    (env["library"] / "registry.json").write_text(json.dumps({"acd:LM1117-3.3": {
+        "mpn": "LM1117MPX-3.3", "manufacturer": "TI", "datasheet": "http://ds",
+        "footprint": "Package_TO_SOT_SMD:SOT-223", "verified": True, "verified_by": "Andrew",
+        "verified_date": "2026-01-01", "notes": ""}}))
+    assert tools.check_parts("demo")["passed"]
+    tools.register_part("acd:LM1117-3.3", "OTHER", "TI", "http://ds", "fp")  # save() writes the new format
+    reg = json.loads((env["library"] / "registry.json").read_text())
+    assert [v["mpn"] for v in reg["acd:LM1117-3.3"]["variants"]] == ["LM1117MPX-3.3", "OTHER"]
+    assert reg["acd:LM1117-3.3"]["variants"][0]["verified"] is True  # untouched
+
+
+def test_two_mpns_on_one_lib_id_are_separate_variants(env):
+    r1 = tools.register_part("Device:LED", "LED-RED", "Kingbright", "http://a", "LED_SMD:LED_0603_1608Metric")
+    r2 = tools.register_part("Device:LED", " led-grn ", "Kingbright", "http://b", "LED_SMD:LED_0805_2012Metric")
+    assert (r1["action"], r2["action"], r2["variant_count"]) == ("added", "added", 2)
+    r3 = tools.register_part("Device:LED", "LED-RED", "Kingbright", "http://a2", "LED_SMD:LED_0603_1608Metric")
+    assert r3["action"] == "updated" and r3["variant_count"] == 2
+    tools.verify_part("Device:LED", "Andrew", "led-red")
+    reg = json.loads((env["library"] / "registry.json").read_text())["Device:LED"]["variants"]
+    assert [v["verified"] for v in reg] == [True, False] and reg[0]["datasheet"] == "http://a2"
+    tools.register_part("Device:LED", "LED-RED", "Kingbright", "http://a2", "LED_SMD:LED_0603_1608Metric")
+    reg = json.loads((env["library"] / "registry.json").read_text())["Device:LED"]["variants"]
+    assert [v["verified"] for v in reg] == [False, False]  # re-registering resets verification
+
+
+def test_verify_part_with_several_variants_needs_an_mpn(env):
+    tools.register_part("Device:LED", "A1", "m", "ds", "fp")
+    tools.register_part("Device:LED", "B2", "m", "ds", "fp")
+    with pytest.raises(AcdError, match="A1, B2"):
+        tools.verify_part("Device:LED", "Andrew")
+    with pytest.raises(AcdError, match="no variant with MPN"):
+        tools.verify_part("Device:LED", "Andrew", "C3")
+    assert tools.verify_part("Device:LED", "Andrew", "B2")["entry"]["verified"]
+
+
+def test_check_parts_matches_the_bom_mpn_to_a_variant(proj):
+    led = lambda mpn, fp="LED_SMD:LED_0603_1608Metric": sym("D1", "Device:LED", "LED", fp, "Kingbright", mpn)
+    tools.register_part("Device:LED", "LED-RED", "Kingbright", "http://ds", "LED_SMD:LED_0603_1608Metric")
+    _led_board(proj, led("LED-RED"))
+    res = tools.check_parts("demo")  # registered but not verified
+    assert not res["passed"] and "registered but not verified" in res["failures"][0]["problems"]
+    tools.verify_part("Device:LED", "Andrew")
+    assert tools.check_parts("demo")["passed"]
+    _led_board(proj, led("LED-GRN"))  # a different LED is not covered by the verified one
+    res = tools.check_parts("demo")
+    assert not res["passed"]
+    assert "Device:LED has no registry entry for MPN LED-GRN" in res["failures"][0]["problems"]
+    _led_board(proj, led(" led-red "))  # MPN compare ignores case and padding
+    assert tools.check_parts("demo")["passed"]
+
+
+def test_check_parts_fails_on_footprint_mismatch(proj):
+    tools.register_part("Device:LED", "LED-RED", "Kingbright", "http://ds", "LED_SMD:LED_0603_1608Metric")
+    tools.verify_part("Device:LED", "Andrew")
+    _led_board(proj, sym("D1", "Device:LED", "LED", "LED_SMD:LED_0805_2012Metric", "Kingbright", "LED-RED"))
+    res = tools.check_parts("demo")
+    assert not res["passed"]
+    assert ("footprint LED_SMD:LED_0805_2012Metric in schematic, registry has "
+            "LED_SMD:LED_0603_1608Metric") in res["failures"][0]["problems"]
+    tools.register_part("Device:LED", "LED-RED", "Kingbright", "http://ds", "")  # no footprint set: no check
+    tools.verify_part("Device:LED", "Andrew")
+    assert tools.check_parts("demo")["passed"]
+
+
+# ------------------------------------------------- fix D: approved revisions are not changed
+def _tree_hashes(root):
+    return {p.relative_to(root).as_posix(): sha256_file(p) for p in sorted(root.rglob("*"))
+            if p.is_file() and p.relative_to(root).parts[0] not in ("backups", "releases")}
+
+
+def test_gate_tools_on_an_approved_revision_change_nothing(approved, env):
+    before = _tree_hashes(approved)
+    backups_before = sorted(p.name for p in (approved / "backups").iterdir())
+    for call in (lambda: tools.check_parts("demo"), lambda: tools.run_erc("demo"),
+                 lambda: tools.run_drc("demo")):
+        res = call()
+        assert res["recorded"] is False and res["backup"] is None
+        assert res["note"] == "rev A is approved: results not recorded; start a new revision to change it"
+    assert _tree_hashes(approved) == before
+    assert sorted(p.name for p in (approved / "backups").iterdir()) == backups_before
+    assert tools.gate_status("demo")["gates"]["approved"]["effective"]
+
+
+def test_approved_revision_check_still_reports_failures(approved, monkeypatch):
+    monkeypatch.setenv("FAKE_ERC_ERRORS", "2")
+    res = tools.run_erc("demo")
+    assert res["passed"] is False and res["errors"] == 2 and res["recorded"] is False
+    assert tools.gate_status("demo")["gates"]["erc_clean"]["passed"] is True
+
+
+def test_gate_tools_on_a_draft_revision_say_recorded(proj):
+    register_and_verify()
+    assert tools.check_parts("demo")["recorded"] is True
+    assert tools.run_erc("demo")["recorded"] is True
+    assert tools.run_drc("demo")["recorded"] is True
+    assert (proj / "reports" / "erc.json").is_file() and (proj / "reports" / "netclass.json").is_file()
+
+
+def test_changing_tools_refuse_an_approved_revision(approved):
+    for call in (lambda: tools.confirm_spec("demo"), lambda: tools.apply_profile("demo"),
+                 lambda: tools.fix_bom_flags("demo")):
+        with pytest.raises(AcdError, match=r"rev A is approved; start a new revision \(new_revision\) first"):
+            call()
+
+
+# ------------------------------------------------- fix G: restore_backup dry run, removals, renames
+def test_restore_dry_run_changes_nothing_and_lists_removals(proj):
+    name = tools.backup("demo", "placement")["backup"]
+    (proj / "demo.kicad_pcb").write_text("(kicad_pcb ; later work)\n")
+    (proj / "extra.txt").write_text("created after backup")
+    before = _tree_hashes(proj)
+    backups_before = sorted(p.name for p in (proj / "backups").iterdir())
+    res = tools.restore_backup("demo", name, dry_run=True)
+    assert res["would_remove"] == ["extra.txt"] and res["would_rename"] == {}
+    assert "demo.kicad_pcb" in res["would_restore"] and "records/project.json" not in res["would_restore"]
+    assert _tree_hashes(proj) == before
+    assert sorted(p.name for p in (proj / "backups").iterdir()) == backups_before
+
+
+def test_restore_reports_removed_files_and_keeps_them_in_the_pre_restore_backup(proj):
+    name = tools.backup("demo", "placement")["backup"]
+    (proj / "extra.txt").write_text("created after backup")
+    res = tools.restore_backup("demo", name)
+    assert res["removed"] == ["extra.txt"] and res["renamed"] == {}
+    assert not (proj / "extra.txt").exists()
+    with zipfile.ZipFile(proj / "backups" / res["pre_restore_backup"]) as zf:
+        assert zf.read("extra.txt") == b"created after backup"
+
+
+def test_restore_renames_kicad_files_to_the_project_name(env):
+    tools.init_project("new-name")
+    root = env["projects"] / "new-name"
+    (root / "new-name.kicad_pcb").write_text("(kicad_pcb ; current)\n")
+    z = root / "backups" / "20260101-0000_A_manual.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("old-name.kicad_pcb", "(kicad_pcb ; old)\n")
+        zf.writestr("old-name.kicad_sch", "(kicad_sch)\n")
+        zf.writestr("notes/old-name.kicad_note", "not renamed\n")
+    dry = tools.restore_backup("new-name", z.name, dry_run=True)
+    assert dry["would_rename"] == {"old-name.kicad_pcb": "new-name.kicad_pcb",
+                                   "old-name.kicad_sch": "new-name.kicad_sch"}
+    assert dry["would_remove"] == ["spec/circuit-spec.yaml"]
+    res = tools.restore_backup("new-name", z.name)
+    assert res["renamed"] == dry["would_rename"]
+    assert (root / "new-name.kicad_pcb").read_text() == "(kicad_pcb ; old)\n"
+    assert (root / "new-name.kicad_sch").is_file()
+    assert (root / "notes" / "old-name.kicad_note").is_file()
+    assert not (root / "old-name.kicad_pcb").exists()
+    assert "new-name.kicad_pcb" not in res["removed"]
+
+
+def test_restore_does_not_rename_when_stems_differ(env):
+    tools.init_project("new-name")
+    root = env["projects"] / "new-name"
+    z = root / "backups" / "20260101-0000_A_manual.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.kicad_pcb", "x")
+        zf.writestr("b.kicad_sch", "y")
+    assert tools.restore_backup("new-name", z.name, dry_run=True)["would_rename"] == {}
+
+
+def test_restore_dry_run_still_rejects_unsafe_archives(proj):
+    evil = proj / "backups" / "20260101-0000_A_manual.zip"
+    with zipfile.ZipFile(evil, "w") as zf:
+        zf.writestr("../escaped.txt", "x")
+    with pytest.raises(AcdError, match="unsafe"):
+        tools.restore_backup("demo", evil.name, dry_run=True)

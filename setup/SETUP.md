@@ -53,7 +53,9 @@ Why Java 25: the Freerouting 2.4.1 jar was built for Java 25. The base MCP itsel
 
 The `kicad` entry sets the backend to `swig` (file based, works with KiCad closed) and points the base MCP at the Freerouting jar. The base MCP finds Freerouting through `FREEROUTING_JAR` and finds Java as the first `java` on PATH (it must be version 21 or newer). If another Java sits ahead of Java 25 on your PATH, the script puts the Java 25 folder first on PATH inside the `kicad` entry only.
 
-The script does not touch KiCad's own library tables, does not create any PCB project, and does not commit anything to git.
+KiCad's global library tables (`%APPDATA%\kicad\10.0\sym-lib-table` and `fp-lib-table`) are normally created the first time KiCad is opened. If they do not exist yet, the script copies KiCad's own template tables there, so the kicad server can find the standard libraries on a fresh install. An existing table is never changed.
+
+The script does not create any PCB project and does not commit anything to git.
 
 ## First test
 

@@ -200,26 +200,50 @@ def is_protected_member(member: str) -> bool:
     return first in PROTECTED_ON_RESTORE
 
 
+def _kicad_renames(project_name: str, members: list[str]) -> dict[str, str]:
+    """Root-level *.kicad_* members to restore under the project's current name.
+
+    KiCad names its files after the folder. If every such member shares one stem and the stem
+    is not the project name (the folder was copied or renamed), they map to <project>.<suffix>.
+    """
+    kicad = {m: m.partition(".kicad_") for m in members if "/" not in m and ".kicad_" in m}
+    stems = {parts[0] for parts in kicad.values()}
+    if len(stems) != 1 or stems == {project_name}:
+        return {}
+    return {m: f"{project_name}.kicad_{parts[2]}" for m, parts in kicad.items()}
+
+
+def plan_restore(root: Path, zip_path: Path) -> dict[str, Any]:
+    """What restoring zip_path would do: {"files": {member: destination}, "remove": [working
+    files not in the zip], "rename": {member: destination, renamed ones only}}.
+    Raises on an unsafe member path; changes nothing."""
+    with zipfile.ZipFile(zip_path) as zf:
+        members = [m for m in zf.namelist() if not m.endswith("/") and not is_protected_member(m)]
+    rename = _kicad_renames(root.name, members)
+    files = {m: rename.get(m, m) for m in members}
+    for m, dest in files.items():
+        if safe_member_target(root, m) is None or safe_member_target(root, dest) is None:
+            raise AcdError(f"refusing unsafe path in archive: {m}")
+    keep = set(files.values())
+    remove = [rel for rel in (p.relative_to(root).as_posix() for p in project_files(root))
+              if not is_protected_member(rel) and rel not in keep]
+    return {"files": files, "remove": remove, "rename": rename}
+
+
 def restore_zip(root: Path, zip_path: Path, *, delete_extras: bool = True) -> int:
     """Replace working files with the zip contents (never backups/, releases/, records/)."""
+    plan = plan_restore(root, zip_path)
+    if delete_extras:
+        for rel in plan["remove"]:
+            (root / rel).unlink()
     with zipfile.ZipFile(zip_path) as zf:
-        members = [m for m in zf.namelist() if not m.endswith("/")]
-        todo = [m for m in members if not is_protected_member(m)]
-        for m in todo:
-            if safe_member_target(root, m) is None:
-                raise AcdError(f"refusing unsafe path in archive: {m}")
-        if delete_extras:
-            for p in project_files(root):
-                rel = p.relative_to(root).as_posix()
-                if not is_protected_member(rel):
-                    p.unlink()
-        for m in todo:
-            target = safe_member_target(root, m)
+        for m, dest in plan["files"].items():
+            target = safe_member_target(root, dest)
             assert target is not None
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(m) as src, target.open("wb") as dst:
                 dst.write(src.read())
-    return len(todo)
+    return len(plan["files"])
 
 
 def zip_differs(root: Path, zip_path: Path) -> bool:

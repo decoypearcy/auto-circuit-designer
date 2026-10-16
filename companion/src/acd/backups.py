@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AcdError
-from .store import Project, make_zip, project_files, restore_zip
+from .store import Project, make_zip, plan_restore, project_files, restore_zip
 
 # Stages Claude (or Andrew) backs up by hand, then the stages the gate tools use on their own.
 # Gate tools never write to the hand stages, so re-running a gate cannot prune them away.
@@ -128,17 +128,22 @@ def create_gate_backup(project: Project, stage: str) -> dict[str, Any]:
     return out
 
 
-def restore_backup(project: Project, backup_name: str) -> dict[str, Any]:
+def restore_backup(project: Project, backup_name: str, dry_run: bool = False) -> dict[str, Any]:
     if backup_name != _safe_name(backup_name) or not _parse(backup_name):
         raise AcdError(f"invalid backup name {backup_name!r}")
     target = project.backups / backup_name
     if not target.is_file():
         raise AcdError(f"backup {backup_name!r} not found")
+    plan = plan_restore(project.root, target)
+    if dry_run:
+        return {"would_restore": sorted(plan["files"].values()), "would_remove": plan["remove"],
+                "would_rename": plan["rename"]}
     pre = create_backup(project, "pre-restore", do_prune=False)
     restored = restore_zip(project.root, target)
     pruned = prune(project, "pre-restore")
     return {"restored": backup_name, "files_restored": restored,
-            "pre_restore_backup": pre["backup"], "pruned": pruned}
+            "pre_restore_backup": pre["backup"], "pruned": pruned,
+            "removed": plan["remove"], "renamed": plan["rename"]}
 
 
 def _safe_name(name: str) -> str:

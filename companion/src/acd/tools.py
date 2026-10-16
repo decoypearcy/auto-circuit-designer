@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import yaml
 
@@ -40,8 +42,26 @@ def _ctx(project: str, *, writes: bool = True) -> tuple[Settings, Project, KiCad
 def _require_draft(proj: Project) -> dict[str, Any]:
     rev = proj.revision(proj.current_rev())
     if rev["status"] != "draft":
-        raise AcdError(f"revision {rev['rev']} is {rev['status']}, not draft; use new_revision to continue work")
+        raise AcdError(f"rev {rev['rev']} is {rev['status']}; start a new revision (new_revision) first")
     return rev
+
+
+@contextmanager
+def _gate_run(proj: Project) -> Iterator[tuple[bool, Path, dict[str, Any]]]:
+    """Setup for a gate check: (record, reports dir, extra result keys).
+
+    On a draft revision the check records its gates and writes reports/. On any other
+    revision (approved) it still runs, but writes into a temporary folder and records nothing,
+    so the project folder does not change.
+    """
+    rev = proj.revision(proj.current_rev())
+    if rev["status"] == "draft":
+        proj.reports.mkdir(exist_ok=True)
+        yield True, proj.reports, {"recorded": True}
+        return
+    note = f"rev {rev['rev']} is {rev['status']}: results not recorded; start a new revision to change it"
+    with tempfile.TemporaryDirectory(prefix="acd-check-") as tmp:
+        yield False, Path(tmp), {"recorded": False, "note": note}
 
 
 # -- project --------------------------------------------------------------
@@ -70,6 +90,7 @@ def init_project(name: str) -> dict[str, Any]:
 
 def apply_profile(project: str) -> dict[str, Any]:
     settings, proj, _ = _ctx(project)
+    _require_draft(proj)
     profile = load_profile(settings.profile_path)
     proj.require_file(proj.pro, proj.pro.name)
     backup = bk.create_backup(proj, "manual")
@@ -87,6 +108,7 @@ def lock_check(project: str) -> dict[str, Any]:
 # -- spec and parts ---------------------------------------------------------
 def confirm_spec(project: str) -> dict[str, Any]:
     _, proj, _ = _ctx(project)
+    _require_draft(proj)
     proj.require_file(proj.spec, "spec/circuit-spec.yaml")
     try:
         data = yaml.safe_load(proj.spec.read_text(encoding="utf-8"))
@@ -105,8 +127,8 @@ def register_part(lib_id: str, mpn: str, manufacturer: str, datasheet: str,
                                   datasheet, footprint, notes)
 
 
-def verify_part(lib_id: str, verified_by: str) -> dict[str, Any]:
-    return registry.verify_part(Settings.from_env(), lib_id, verified_by)
+def verify_part(lib_id: str, verified_by: str, mpn: str = "") -> dict[str, Any]:
+    return registry.verify_part(Settings.from_env(), lib_id, verified_by, mpn)
 
 
 def _no_datasheet(value: Any) -> bool:
@@ -118,8 +140,9 @@ def check_parts(project: str) -> dict[str, Any]:
     settings, proj, cli = _ctx(project)
     proj.require_file(proj.sch, proj.sch.name)
     sch_hash = proj.file_hash(proj.sch)
-    backup = bk.create_gate_backup(proj, "pre-parts")  # before the gate record (and bom-check.csv) change
-    rows = export_bom_rows(cli, proj.sch, proj.reports / "bom-check.csv")
+    with _gate_run(proj) as (record, out_dir, extra):
+        backup = bk.create_gate_backup(proj, "pre-parts") if record else None  # before the record (and bom-check.csv) change
+        rows = export_bom_rows(cli, proj.sch, out_dir / "bom-check.csv")
     lib_ids = symbol_lib_ids(proj.sch)
     reg = registry.load(settings)
     failures: list[dict[str, str]] = []
@@ -130,13 +153,21 @@ def check_parts(project: str) -> dict[str, Any]:
         if lib_id is None:
             problems.append("symbol not found in schematic file (cannot determine lib_id)")
         elif lib_id not in registry.STOCK_ACCEPTED:
-            entry = reg.get(lib_id)
-            if entry is None:
+            mpn = (row.get("MPN") or "").strip()
+            entry = registry.find_variant(reg, lib_id, mpn)
+            if lib_id not in reg:
                 problems.append(f"{lib_id} is not in the parts registry")
-            elif not entry.get("verified"):
-                problems.append(f"{lib_id} is registered but not verified")
-            if entry is not None and _no_datasheet(entry.get("datasheet")):
-                problems.append(f"{lib_id} has no datasheet in the parts registry")
+            elif entry is None:
+                problems.append(f"{lib_id} has no registry entry for MPN {mpn}")
+            else:
+                if not entry.get("verified"):
+                    problems.append(f"{lib_id} ({mpn}) is registered but not verified")
+                if _no_datasheet(entry.get("datasheet")):
+                    problems.append(f"{lib_id} has no datasheet in the parts registry")
+                reg_fp = (entry.get("footprint") or "").strip()
+                sch_fp = (row.get("Footprint") or "").strip()
+                if reg_fp and reg_fp != sch_fp:
+                    problems.append(f"footprint {sch_fp} in schematic, registry has {reg_fp}")
         for field in ("Manufacturer", "MPN"):
             if not (row.get(field) or "").strip():
                 problems.append(f"missing {field} field")
@@ -148,9 +179,10 @@ def check_parts(project: str) -> dict[str, Any]:
     passed = not failures
     detail = (f"{len(rows)} BOM parts verified" if passed
               else f"{len(failures)} of {len(rows)} BOM parts failed")
-    gt.set_gate(proj, "parts_verified", passed, detail, hash_value=sch_hash)
+    if record:
+        gt.set_gate(proj, "parts_verified", passed, detail, hash_value=sch_hash)
     return {"gate": "parts_verified", "passed": passed, "parts_checked": len(rows),
-            "failures": failures, "backup": backup["backup"]}
+            "failures": failures, "backup": backup["backup"] if backup else None, **extra}
 
 
 # -- ERC / DRC --------------------------------------------------------------
@@ -158,33 +190,35 @@ def run_erc(project: str) -> dict[str, Any]:
     _, proj, cli = _ctx(project)
     proj.require_file(proj.sch, proj.sch.name)
     sch_hash = proj.file_hash(proj.sch)
-    backup = bk.create_gate_backup(proj, "pre-erc")  # before cli.erc, so the state going in is saved
-    out = proj.reports / "erc.json"
-    proj.reports.mkdir(exist_ok=True)
-    out.unlink(missing_ok=True)
-    cli.erc(proj.sch, out)
-    summary = reports.summarize_erc(reports.load_report(out))
+    with _gate_run(proj) as (record, out_dir, extra):
+        backup = bk.create_gate_backup(proj, "pre-erc") if record else None  # before cli.erc, so the state going in is saved
+        out = out_dir / "erc.json"
+        out.unlink(missing_ok=True)
+        cli.erc(proj.sch, out)
+        summary = reports.summarize_erc(reports.load_report(out))
     passed = summary["errors"] == 0
-    gt.set_gate(proj, "erc_clean", passed, f"{summary['errors']} errors, {summary['warnings']} warnings",
-                hash_value=sch_hash)
-    return {"gate": "erc_clean", "passed": passed, **summary, "backup": backup["backup"]}
+    if record:
+        gt.set_gate(proj, "erc_clean", passed, f"{summary['errors']} errors, {summary['warnings']} warnings",
+                    hash_value=sch_hash)
+    return {"gate": "erc_clean", "passed": passed, **summary,
+            "backup": backup["backup"] if backup else None, **extra}
 
 
 def run_drc(project: str) -> dict[str, Any]:
     settings, proj, cli = _ctx(project)
     proj.require_file(proj.pcb, proj.pcb.name)
     pcb_hash = proj.file_hash(proj.pcb)
-    backup = bk.create_gate_backup(proj, "pre-drc")  # before cli.drc and the gate records
-    out = proj.reports / "drc.json"
-    proj.reports.mkdir(exist_ok=True)
-    out.unlink(missing_ok=True)
-    cli.drc(proj.pcb, out)
-    summary = reports.summarize_drc(reports.load_report(out))
-    nc = _netclass_check(proj)
-    spec = _load_spec(proj)
-    failing, accepted, problems = _split_narrow(spec, nc["narrow_tracks"])
-    nc["accepted_narrow"] = accepted
-    (proj.reports / "netclass.json").write_text(json.dumps(nc, indent=2), encoding="utf-8")
+    with _gate_run(proj) as (record, out_dir, extra):
+        backup = bk.create_gate_backup(proj, "pre-drc") if record else None  # before cli.drc and the gate records
+        out = out_dir / "drc.json"
+        out.unlink(missing_ok=True)
+        cli.drc(proj.pcb, out)
+        summary = reports.summarize_drc(reports.load_report(out))
+        nc = _netclass_check(proj)
+        spec = _load_spec(proj)
+        failing, accepted, problems = _split_narrow(spec, nc["narrow_tracks"])
+        nc["accepted_narrow"] = accepted
+        (out_dir / "netclass.json").write_text(json.dumps(nc, indent=2), encoding="utf-8")
     summary["netclass_check"] = nc
     empty = len(nc["classes_without_nets"])
     reasons: list[str] = list(problems)
@@ -204,11 +238,12 @@ def run_drc(project: str) -> dict[str, Any]:
     if accepted:
         detail += "; accepted narrow: " + ", ".join(
             f"{net} {r['min_width']:g} mm ({r['reason']})" for net, r in accepted.items())
-    gt.set_gate(proj, "drc_clean", drc_ok, detail, hash_value=pcb_hash)
-    gt.set_gate(proj, "unrouted_zero", routed, f"{summary['unconnected']} unconnected items",
-                hash_value=pcb_hash)
+    if record:
+        gt.set_gate(proj, "drc_clean", drc_ok, detail, hash_value=pcb_hash)
+        gt.set_gate(proj, "unrouted_zero", routed, f"{summary['unconnected']} unconnected items",
+                    hash_value=pcb_hash)
     return {"gates": {"drc_clean": drc_ok, "unrouted_zero": routed}, **summary,
-            "backup": backup["backup"]}
+            "backup": backup["backup"] if backup else None, **extra}
 
 
 def _load_spec(proj: Project) -> dict[str, Any]:
@@ -284,8 +319,6 @@ def _netclass_check(proj: Project) -> dict[str, Any]:
         nc: dict[str, Any] = {"classes": {}, "classes_without_nets": [], "narrow_tracks": {}}
     else:
         nc = boardcheck.netclass_check(proj.pro, proj.pcb)
-    (proj.reports / "netclass.json").write_text(
-        json.dumps(nc, indent=2), encoding="utf-8")
     return nc
 
 
@@ -293,6 +326,7 @@ def fix_bom_flags(project: str) -> dict[str, Any]:
     """Set in_bom no on placed symbols whose library symbol is not a BOM part
     (mounting holes, fiducials). The kicad server writes in_bom yes on every symbol."""
     _, proj, _ = _ctx(project)
+    _require_draft(proj)
     proj.require_file(proj.sch, proj.sch.name)
     text = proj.sch.read_text(encoding="utf-8")
     new, changed = boardcheck.fix_bom_flags_text(text)
@@ -352,9 +386,9 @@ def list_backups(project: str) -> dict[str, Any]:
     return {"backups": bk.list_backups(proj)}
 
 
-def restore_backup(project: str, backup_name: str) -> dict[str, Any]:
-    _, proj, _ = _ctx(project)
-    return bk.restore_backup(proj, backup_name)
+def restore_backup(project: str, backup_name: str, dry_run: bool = False) -> dict[str, Any]:
+    _, proj, _ = _ctx(project, writes=not dry_run)
+    return bk.restore_backup(proj, backup_name, dry_run=dry_run)
 
 
 # -- approval and release -----------------------------------------------------
@@ -420,6 +454,9 @@ def new_revision(project: str, from_rev: str) -> dict[str, Any]:
     src = proj.revision(from_rev)
     if src["status"] != "approved":
         raise AcdError(f"revision {from_rev} is {src['status']}; only an approved revision can be revised")
+    if src.get("superseded_by"):
+        raise AcdError(f"revision {from_rev} is already superseded by rev {src['superseded_by']}; "
+                       "only an approved revision that is not superseded can be revised")
     zpath = proj.release_dir(from_rev) / "project.zip"
     if not zpath.is_file():
         raise AcdError(f"rev {from_rev} has no release (releases/rev-{from_rev}/project.zip); run export_release first")
@@ -434,7 +471,7 @@ def new_revision(project: str, from_rev: str) -> dict[str, Any]:
         restored = True
     for r in revs:
         if r["rev"] == from_rev:
-            r["status"] = "superseded"
+            r["superseded_by"] = new  # the parent's status stays "approved"
     revs.append(gt.new_revision_obj(new, from_rev))
     proj.write_json("records/revisions.json", revs)
     info = proj.project_info()

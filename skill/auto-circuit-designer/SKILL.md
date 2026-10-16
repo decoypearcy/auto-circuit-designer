@@ -21,7 +21,8 @@ it records the gate. Use the kicad one only for `get_drc_violations` detail.
 5. Back up before every change, never after. Before any change in a stage (schematic edits, placement moves, routing edits, review edits), run `acd backup(stage=<stage>)` first, so the backup holds the state before the change. Restoring that backup undoes the stage. The acd gate tools also back up first, on their own stages so they never push your stage backups out: `confirm_spec` (spec), `check_parts` (pre-parts), `run_erc` (pre-erc), `run_drc` (pre-drc), `approve` (approved). A gate re-run on an unchanged design reuses its last backup instead of making a new one.
 6. Never hide a problem. Every ERC/DRC error, unrouted net, missing datasheet and unverified part goes in the review summary.
 7. All dimensions in mm. Never use the long dash character in anything you write.
-8. Release files are read-only history. Never edit anything in `releases/`. A new change is a new revision (step 10).
+8. Release files are read-only history. Never edit anything in `releases/`. A new change is a new revision (step 10). On an approved revision, `check_parts`, `run_erc` and `run_drc` still run but return `recorded: false` and change nothing; `confirm_spec`, `apply_profile` and `fix_bom_flags` refuse.
+9. An acd tool that fails returns `{"ok": false, "error": "..."}` (plus `where` for an unexpected error) instead of throwing. Read the error, report it to Andrew in plain words, and do not treat the call as done.
 
 ## kicad server quirks (found in T-15, base MCP v2.7.0)
 - `sync_schematic_to_board`, `autoroute` and `refill_zones` write the board file outside the session. Call kicad `open_project` straight after each one, before any other board call. Otherwise the next edit is refused ("Auto-save refused") or works on a stale board.
@@ -87,13 +88,13 @@ notes: []
 ### 2. Library
 - For each part, look for a symbol and footprint: kicad `search_symbols`, `search_footprints`, `get_footprint_info`. Prefer KiCad's official libraries.
 - `Device:R`, `Device:C`, `Device:L` with standard footprints need no verification, but they still need a Datasheet field (see House conventions).
-- The parts registry is keyed by symbol (lib_id), so a generic symbol such as `Device:LED` or `Connector_Generic:Conn_01x04` holds one MPN. If a board needs a different part on the same generic symbol, ask Andrew before re-registering it (it changes the entry for every board).
+- The parts registry holds variants per symbol (lib_id), one per MPN, so a generic symbol such as `Device:LED` or `Connector_Generic:Conn_01x04` can carry several verified parts. `acd check_parts` matches each BOM part's MPN to a variant and fails if that MPN is not registered, not verified, has no datasheet, or has a different footprint from the schematic. A new part on a generic symbol is a new variant: register it, verify it with Andrew, and leave the other variants alone.
 - For anything else not already verified in the library registry:
   - Find it with kicad `search_jlcpcb_parts` or `get_datasheet_url`. Ask before downloading.
   - If it is missing from the libraries, import it with easyeda2kicad by LCSC number into ACD_LIBRARY_ROOT (ask first).
   - Check the pin map and footprint pads against the datasheet: pin numbers and names, pad size and pitch, pin 1 location, package outline.
   - `acd register_part(...)`, then show Andrew the comparison (datasheet pinout vs symbol, land pattern vs footprint).
-  - Only after his sign-off: `acd verify_part(lib_id, verified_by="Andrew")`.
+  - Only after his sign-off: `acd verify_part(lib_id, verified_by="Andrew", mpn="<MPN>")`. The mpn is required when the lib_id has more than one variant.
 - Set `Manufacturer`, `MPN` and `Datasheet` fields on every BOM part.
 - Before the first schematic change in this stage, `acd backup(stage=library)`.
 
@@ -172,14 +173,16 @@ Preview: <board view>
 
 ### 10. Improve a design later
 - `acd list_backups` / read `records/revisions.json` to find the approved revision.
-- `acd new_revision(from_rev=<X>)`. It backs up the current state first, marks the old revision superseded, and restores the approved files. Then loop from step 1, 2 or 3 depending on the change. The old release stays untouched.
+- `acd new_revision(from_rev=<X>)`. It backs up the current state first, restores the approved files, and records `superseded_by` on the old revision, which stays approved. A revision that is already superseded cannot be revised again. Then loop from step 1, 2 or 3 depending on the change. The old release stays untouched.
 
 ### Restore
-- `acd list_backups`, show Andrew the choices, and on his pick `acd restore_backup`. It saves a pre-restore backup first.
+- `acd list_backups`, show Andrew the choices. For his pick, run `acd restore_backup(..., dry_run=true)` first and show him `would_remove` (working files not in the backup) and `would_rename`. On his yes, `acd restore_backup`. It saves a pre-restore backup first (removed files are in it) and returns `removed` and `renamed`.
+- If the project folder was copied or renamed, a restore brings the KiCad files back under the current folder name.
 - Backups hold the state before a change, so an `approved` backup is the design just before approval, with no approval record. The approved state itself is in `releases/rev-X/project.zip`, which is what `acd new_revision` starts from.
 
 ## When something fails
 - kicad server tool errors: retry once, then report the exact error and stop. Do not work around the server by editing KiCad files directly.
-- kicad `search_symbols` or `search_footprints` finds nothing, even for `Device:R`: KiCad has no global library tables yet (it has never been opened since install). Ask Andrew to open and close KiCad once, then restart Claude Desktop so the kicad server reloads them.
+- kicad `search_symbols` or `search_footprints` finds nothing, even for `Device:R`: KiCad has no global library tables yet. Setup creates them from KiCad's templates (step "kicad lib tables"), so ask Andrew to re-run setup, or to open and close KiCad once. Then restart Claude Desktop so the kicad server reloads them.
+- An `acd run_erc` or `acd run_drc` call can pass the link's 60 s timeout on a larger board while kicad-cli keeps working. Do not re-run it straight away: wait about 30 s, then read the result with `acd gate_status` and `acd review_summary`. Re-run only if the gate's `at` time did not change.
 - `check_freerouting` fails: tell Andrew Java or the Freerouting jar is missing and point him to setup/SETUP.md. Offer manual routing meanwhile.
 - A gate keeps failing: list the exact items, propose fixes, and ask before making changes the spec did not cover.

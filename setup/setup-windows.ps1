@@ -596,6 +596,33 @@ function Confirm-Companion {
 }
 
 # ---------------------------------------------------------------------------
+# KiCad global library tables (T-16)
+# ---------------------------------------------------------------------------
+# KiCad creates %APPDATA%\kicad\10.0\sym-lib-table and fp-lib-table on its first launch. On a fresh
+# install that has never been opened, they do not exist and the kicad server finds no libraries
+# (search_symbols returns nothing even for Device:R). Copy KiCad's own template tables, only for a
+# table that does not exist yet. Never overwrites.
+function Get-KiCadConfigDir { return (Join-Path $env:APPDATA 'kicad\10.0') }
+
+function Confirm-KiCadLibTables {
+    Write-Step 'KiCad global library tables'
+    if (-not $script:KiCad) { throw 'KiCad was not found; run the kicad step first.' }
+    $tpl = Join-Path $script:KiCad.Root 'share\kicad\template'
+    $cfg = Get-KiCadConfigDir
+    if (-not (Test-Path -LiteralPath (Join-Path $tpl 'sym-lib-table'))) { throw "KiCad template tables not found in $tpl" }
+    New-Item -ItemType Directory -Force -Path $cfg | Out-Null
+    $copied = @()
+    foreach ($n in @('sym-lib-table', 'fp-lib-table', 'design-block-lib-table')) {
+        $src = Join-Path $tpl $n; $dst = Join-Path $cfg $n
+        if (Test-Path -LiteralPath $dst) { Write-Info "$n exists, left as is" }
+        elseif (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $dst; Write-Good "$n copied from KiCad's template"; $copied += $n }
+        else { Write-Info "$n is not in KiCad's template (not needed)" }
+    }
+    $detail = if ($copied.Count) { 'copied: ' + ($copied -join ', ') } else { 'already present' }
+    Add-Result 'kicad lib tables' 'OK' $detail
+}
+
+# ---------------------------------------------------------------------------
 # Folders, library, environment variables
 # ---------------------------------------------------------------------------
 function Read-Folder([string]$Prompt, [string]$Given, [string]$EnvName, [string]$Default) {
@@ -780,6 +807,12 @@ function Test-Smoke {
     if ($ux) { $r = Invoke-Capture -File $ux -ArgList @('--version'); Add-Check 'uv --version' ($r.ExitCode -eq 0) (Get-FirstLine $r.Output) }
     else { Add-Check 'uv --version' $false 'uv not found' }
 
+    $kcfg = Get-KiCadConfigDir
+    foreach ($n in @('sym-lib-table', 'fp-lib-table')) {
+        $t = Join-Path $kcfg $n
+        Add-Check "KiCad global $n" (Test-Path -LiteralPath $t) $t
+    }
+
     Add-Check 'freerouting jar' ($script:FrJar -and (Test-Path -LiteralPath $script:FrJar)) ([string]$script:FrJar)
     Add-Check 'base MCP build' ($script:McpIndex -and (Test-Path -LiteralPath $script:McpIndex)) ([string]$script:McpIndex)
 
@@ -812,6 +845,7 @@ $steps = @(
     @{ Name = 'node';         Fatal = $true;  Run = { Confirm-Node } },
     @{ Name = 'java';         Fatal = $true;  Run = { Confirm-Java } },
     @{ Name = 'kicad';        Fatal = $true;  Run = { Confirm-KiCad } },
+    @{ Name = 'kicad lib tables'; Fatal = $false; Run = { Confirm-KiCadLibTables } },
     @{ Name = 'uv';           Fatal = $true;  Run = { Confirm-Uv } },
     @{ Name = 'freerouting';  Fatal = $false; Run = { Confirm-Freerouting } },
     @{ Name = 'base MCP';     Fatal = $false; Run = { Confirm-BaseMcp } },
