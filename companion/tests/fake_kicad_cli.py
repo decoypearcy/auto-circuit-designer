@@ -129,7 +129,7 @@ def main(argv):
         names = ["PTH", "NPTH"] if "--excellon-separate-th" in argv else ["all"]
         for nm in names:
             (out / f"{stem}-{nm}.drl").write_text(
-                f"M48\n; DRILL file {{KiCad 10.0.1}} date {stamp()}\n"
+                f"M48\n; DRILL file KiCad 10.0.6 date {stamp()}\n"
                 f"; #@! TF.CreationDate,{stamp()}\nMETRIC\nM30\n", encoding="utf-8")
     elif cmd == ["pcb", "export", "pos"]:
         Path(opt(argv, "-o", "--output")).write_text("Ref,Val,PosX,PosY\nR1,10k,1,2\n", encoding="utf-8")

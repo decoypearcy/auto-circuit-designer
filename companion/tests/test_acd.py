@@ -722,9 +722,13 @@ def test_normalise_dates_only_changes_date_values():
     out = normalise_dates(a, d)
     assert out == (f"G04 #@! TF.CreationDate,{d}*\n%TF.CreationDate,{d}*%\n"
                    f"G04 Created by KiCad (PCBNEW 7) date {d}*\nX1Y1D02*\n")
-    drl = "M48\n; DRILL file {KiCad 10.0.1} date Thu 01 Jan 2025\n; #@! TF.CreationDate,2025-01-01T01:02:03+00:00\nMETRIC\n"
-    assert normalise_dates(drl, d) == (f"M48\n; DRILL file {{KiCad 10.0.1}} date {d}\n"
+    # real KiCad 10.0.6 Excellon header (seen in a real export): no braces around the version
+    drl = "M48\n; DRILL file KiCad 10.0.6 date 2026-10-16T20:41:02+11:00\n; #@! TF.CreationDate,2025-01-01T01:02:03+00:00\nMETRIC\n"
+    assert normalise_dates(drl, d) == (f"M48\n; DRILL file KiCad 10.0.6 date {d}\n"
                                        f"; #@! TF.CreationDate,{d}\nMETRIC\n")
+    # the older braced form still normalises too
+    drl_old = "M48\n; DRILL file {KiCad 10.0.1} date Thu 01 Jan 2025\nMETRIC\n"
+    assert normalise_dates(drl_old, d) == f"M48\n; DRILL file {{KiCad 10.0.1}} date {d}\nMETRIC\n"
     job = '{"Header": {"CreationDate": "2025-01-01T01:02:03+00:00", "Other": "keep"}, "FileDate": "x"}'
     assert normalise_dates(job, d) == (f'{{"Header": {{"CreationDate": "{d}", "Other": "keep"}}, "FileDate": "{d}"}}')
     assert normalise_dates(out, d) == out  # idempotent

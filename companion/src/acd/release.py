@@ -34,12 +34,12 @@ def export_bom_rows(cli: KiCadCli, sch: Path, out_csv: Path) -> list[dict[str, s
 # Creation-date values in the files kicad-cli writes. Only the value is replaced.
 #   Gerber X2:        %TF.CreationDate,<iso>*%      (--no-x2: G04 #@! TF.CreationDate,<iso>*)
 #   Gerber (old):     G04 Created by KiCad (...) date <date>*
-#   Excellon:         ; DRILL file {KiCad ...} date <date>   and   ; #@! TF.CreationDate,<iso>
+#   Excellon:         ; DRILL file KiCad 10.0.6 date <date>   and   ; #@! TF.CreationDate,<iso>
 #   Gerber job JSON:  "CreationDate": "<iso>"   and   "FileDate": "<iso>"
 _DATE_PATTERNS = (
     re.compile(r"(TF\.CreationDate,)[^*\r\n]*"),
     re.compile(r"(G04 Created by KiCad[^\r\n]*? date )[^*\r\n]*"),
-    re.compile(r"(; DRILL file \{[^}\r\n]*\} date )[^\r\n]*"),
+    re.compile(r"(; DRILL file [^\r\n]*? date )[^\r\n]*"),
     re.compile(r'("(?:CreationDate|FileDate)"\s*:\s*")[^"]*(")'),
 )
 _DATED_SUFFIXES = (".gbr", ".drl", ".gbrjob")
