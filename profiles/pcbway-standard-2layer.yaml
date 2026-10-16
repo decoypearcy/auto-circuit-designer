@@ -1,0 +1,70 @@
+# PCBWay Standard PCB, 2 layers - house design rule profile
+# Source: https://www.pcbway.com/capabilities.html (checked 2026-10-16)
+# House values sit above PCBWay's minimums so boards stay at standard pricing
+# and are easy to hand solder. "pcbway_min" is the fab limit, never design to it.
+
+profile: pcbway-standard-2layer
+verified: 2026-10-16
+
+board:
+  layers: 2
+  thickness_mm: 1.6          # PCBWay options 0.2-3.2 mm
+  material: FR4
+  copper_oz: 1               # outer 1-8 oz available
+  max_size_mm: [100, 100]    # project assumption; PCBWay max 600 x 1200
+
+tracks:
+  default_width_mm: 0.25
+  min_width_mm: 0.15         # pcbway_min 0.10 (4 mil)
+  power_width: by_net_class  # sized from net class current
+
+clearance:
+  default_mm: 0.20
+  min_mm: 0.15               # pcbway_min 0.10 (4 mil)
+  copper_to_edge_mm: 0.30    # standard tier not listed; advanced tier 0.25
+
+vias:
+  pad_mm: 0.60
+  drill_mm: 0.30             # annular ring 0.15 = pcbway_min 0.15 (6 mil)
+
+drill:
+  min_mm: 0.30               # pcbway_min 0.15; under 0.20 costs extra
+  max_mm: 6.00               # over 6.0 costs extra
+  pth_tolerance_mm: 0.08
+  npth_tolerance_mm: 0.05
+
+annular_ring:
+  min_mm: 0.15               # pcbway_min 0.15
+
+solder_mask:
+  min_web_mm: 0.10           # standard tier not listed; advanced green 4 mil
+
+silkscreen:
+  min_line_mm: 0.15          # pcbway_min 0.15
+  min_text_height_mm: 0.80   # pcbway_min 0.8, width:height 1:5
+  default_text_height_mm: 1.00
+  default_line_mm: 0.15
+
+mounting_holes:              # D-17, D-18
+  default: M3
+  footprint: MountingHole:MountingHole_3.2mm_M3
+  plated: false
+  count: 4
+  inset_from_edges_mm: 4.0
+  keepout_diameter_mm: 7.0
+
+parts:                       # D-12
+  preferred_passive_size: "0805"
+  allowed_smaller: ["0603"]  # only where required
+  prefer_handsolder_footprints: true
+  disallowed_without_approval: [QFN, DFN, BGA, "0402"]
+
+outputs:
+  gerber_format: RS-274X
+  gerber_x2: false           # conservative; confirm with PCBWay's online viewer on first order
+  drill_format: excellon
+  drill_units: mm
+  drill_split_pth_npth: true
+  layers: [F.Cu, B.Cu, F.Mask, B.Mask, F.Silkscreen, B.Silkscreen, F.Paste, B.Paste, Edge.Cuts]
+  bom: csv                   # refs, value, footprint, manufacturer, MPN, qty
+  centroid: false            # bare boards (D-18)
