@@ -1,6 +1,6 @@
 ---
 name: auto-circuit-designer
-description: Design a 2-layer PCB in KiCad 10 from a circuit description, using the kicad and acd MCP servers - spec, library parts, schematic, outline and mounting holes, placement, routing, review, approval, PCBWay export and local backups.
+description: Use when Andrew describes a circuit or asks to design, revise, review, approve or export a PCB. Runs the Auto Circuit Designer workflow in KiCad 10 through the kicad and acd MCP servers on his PC - spec, verified library parts, schematic, outline and M3 mounting holes, placement, routing, review gates, approval, PCBWay export and local backups.
 ---
 
 # Auto Circuit Designer
@@ -84,6 +84,7 @@ notes: []
 ### 2. Library
 - For each part, look for a symbol and footprint: kicad `search_symbols`, `search_footprints`, `get_footprint_info`. Prefer KiCad's official libraries.
 - `Device:R`, `Device:C`, `Device:L` with standard footprints need no verification.
+- The parts registry is keyed by symbol (lib_id), so a generic symbol such as `Device:LED` or `Connector_Generic:Conn_01x04` holds one MPN. If a board needs a different part on the same generic symbol, ask Andrew before re-registering it (it changes the entry for every board).
 - For anything else not already verified in the library registry:
   - Find it with kicad `search_jlcpcb_parts` or `get_datasheet_url`. Ask before downloading.
   - If it is missing from the libraries, import it with easyeda2kicad by LCSC number into ACD_LIBRARY_ROOT (ask first).
@@ -149,7 +150,7 @@ Preview: <board view>
 ```
 - Silk warnings do not block the DRC gate, so always list them. Fix them (move or hide the text) unless Andrew accepts them.
 - Andrew may edit in KiCad. While he does, do not write to the project. When he says he is done, `acd lock_check`, then re-run `acd check_parts`, `acd run_erc`, `acd run_drc` and resend the summary. Offer to re-run the autorouter if he moved parts.
-- Schematic changes: edit the schematic, then `sync_schematic_to_board` (placement is kept), then re-check.
+- Schematic changes: edit the schematic, then `sync_schematic_to_board` and `open_project` (placement is kept), then re-check.
 - `acd backup(stage=review)` after each round of changes.
 
 ### 8. Approval
@@ -170,5 +171,6 @@ Preview: <board view>
 
 ## When something fails
 - kicad server tool errors: retry once, then report the exact error and stop. Do not work around the server by editing KiCad files directly.
+- kicad `search_symbols` or `search_footprints` finds nothing, even for `Device:R`: KiCad has no global library tables yet (it has never been opened since install). Ask Andrew to open and close KiCad once, then restart Claude Desktop so the kicad server reloads them.
 - `check_freerouting` fails: tell Andrew Java or the Freerouting jar is missing and point him to setup/SETUP.md. Offer manual routing meanwhile.
 - A gate keeps failing: list the exact items, propose fixes, and ask before making changes the spec did not cover.
