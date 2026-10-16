@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import zipfile
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .config import AcdError
-from .store import Project, make_zip, restore_zip
+from .store import Project, make_zip, project_files, restore_zip
 
+# Stages Claude (or Andrew) backs up by hand, then the stages the gate tools use on their own.
+# Gate tools never write to the hand stages, so re-running a gate cannot prune them away.
 STAGES = ("spec", "library", "schematic", "placement", "routed", "review",
-          "approved", "pre-restore", "manual")
+          "approved", "pre-restore", "manual",
+          "pre-parts", "pre-erc", "pre-drc")
+
+# Files that define the design. Gate records, reports and .kicad_prl (KiCad UI state) are not
+# design: a gate re-run that changes only those does not need a new backup.
+_DESIGN_SUFFIXES = (".kicad_sch", ".kicad_pcb", ".kicad_pro", ".kicad_dru")
+_SPEC_ARC = "spec/circuit-spec.yaml"
 _NAME_RE = re.compile(r"^(\d{8}-\d{4})_([A-Z]+)_([a-z-]+)\.zip$")
 
 
@@ -68,6 +79,53 @@ def create_backup(project: Project, stage: str, *, do_prune: bool = True) -> dic
     count = make_zip(project.root, project.backups / name)
     removed = prune(project, stage) if do_prune else []
     return {"backup": name, "files": count, "pruned": removed}
+
+
+def _is_design(arc: str) -> bool:
+    return arc == _SPEC_ARC or arc.endswith(_DESIGN_SUFFIXES)
+
+
+def _digest(items: list[tuple[str, bytes]]) -> str:
+    h = hashlib.sha256()
+    for arc, data in sorted(items):
+        h.update(arc.encode("utf-8") + b"\0" + hashlib.sha256(data).digest())
+    return h.hexdigest()
+
+
+def design_digest(project: Project) -> str:
+    """Hash of the design files in the working folder."""
+    items = []
+    for p in project_files(project.root):
+        arc = p.relative_to(project.root).as_posix()
+        if _is_design(arc):
+            items.append((arc, p.read_bytes()))
+    return _digest(items)
+
+
+def design_digest_of_backup(path: Path) -> str:
+    """Hash of the design files inside a backup zip (same rule as design_digest)."""
+    with zipfile.ZipFile(path) as zf:
+        return _digest([(n, zf.read(n)) for n in zf.namelist() if _is_design(n)])
+
+
+def create_gate_backup(project: Project, stage: str) -> dict[str, Any]:
+    """Backup taken by a gate tool before it writes its record.
+
+    Skipped when the design files match the newest backup of the same stage: a re-run on an
+    unchanged design would only add a copy and push older backups of that stage out of the
+    keep window. The result names the backup that holds the state going in either way.
+    """
+    latest = next((b for b in list_backups(project) if b["stage"] == stage), None)
+    if latest is not None:
+        try:
+            same = design_digest_of_backup(project.backups / latest["name"]) == design_digest(project)
+        except (OSError, zipfile.BadZipFile):
+            same = False
+        if same:
+            return {"backup": latest["name"], "files": 0, "pruned": [], "skipped": True}
+    out = create_backup(project, stage)
+    out["skipped"] = False
+    return out
 
 
 def restore_backup(project: Project, backup_name: str) -> dict[str, Any]:

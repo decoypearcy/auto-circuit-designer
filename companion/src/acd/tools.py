@@ -94,7 +94,7 @@ def confirm_spec(project: str) -> dict[str, Any]:
         raise AcdError(f"spec/circuit-spec.yaml is not valid YAML: {exc}") from exc
     if not data:
         raise AcdError("spec/circuit-spec.yaml is empty; write the spec before confirming it")
-    backup = bk.create_backup(proj, "spec")  # state going in, before the gate record changes
+    backup = bk.create_gate_backup(proj, "spec")  # state going in, before the gate record changes
     gate = gt.set_gate(proj, "spec_confirmed", True, "spec confirmed by user")
     return {"gate": "spec_confirmed", **gate, "backup": backup["backup"]}
 
@@ -118,7 +118,7 @@ def check_parts(project: str) -> dict[str, Any]:
     settings, proj, cli = _ctx(project)
     proj.require_file(proj.sch, proj.sch.name)
     sch_hash = proj.file_hash(proj.sch)
-    backup = bk.create_backup(proj, "schematic")  # before the gate record (and bom-check.csv) change
+    backup = bk.create_gate_backup(proj, "pre-parts")  # before the gate record (and bom-check.csv) change
     rows = export_bom_rows(cli, proj.sch, proj.reports / "bom-check.csv")
     lib_ids = symbol_lib_ids(proj.sch)
     reg = registry.load(settings)
@@ -158,7 +158,7 @@ def run_erc(project: str) -> dict[str, Any]:
     _, proj, cli = _ctx(project)
     proj.require_file(proj.sch, proj.sch.name)
     sch_hash = proj.file_hash(proj.sch)
-    backup = bk.create_backup(proj, "schematic")  # before cli.erc, so the state going in is saved
+    backup = bk.create_gate_backup(proj, "pre-erc")  # before cli.erc, so the state going in is saved
     out = proj.reports / "erc.json"
     proj.reports.mkdir(exist_ok=True)
     out.unlink(missing_ok=True)
@@ -174,22 +174,26 @@ def run_drc(project: str) -> dict[str, Any]:
     settings, proj, cli = _ctx(project)
     proj.require_file(proj.pcb, proj.pcb.name)
     pcb_hash = proj.file_hash(proj.pcb)
-    backup = bk.create_backup(proj, "routed")  # before cli.drc and the gate records
+    backup = bk.create_gate_backup(proj, "pre-drc")  # before cli.drc and the gate records
     out = proj.reports / "drc.json"
     proj.reports.mkdir(exist_ok=True)
     out.unlink(missing_ok=True)
     cli.drc(proj.pcb, out)
     summary = reports.summarize_drc(reports.load_report(out))
     nc = _netclass_check(proj)
+    spec = _load_spec(proj)
+    failing, accepted, problems = _split_narrow(spec, nc["narrow_tracks"])
+    nc["accepted_narrow"] = accepted
+    (proj.reports / "netclass.json").write_text(json.dumps(nc, indent=2), encoding="utf-8")
     summary["netclass_check"] = nc
     empty = len(nc["classes_without_nets"])
-    reasons: list[str] = []
-    if nc["narrow_tracks"]:
-        total = sum(r["segments"] for r in nc["narrow_tracks"].values())
+    reasons: list[str] = list(problems)
+    if failing:
+        total = sum(r["segments"] for r in failing.values())
         which = ", ".join(f"{net} {r['min_width']:g} mm vs class {r['class_width']:g} mm"
-                          for net, r in nc["narrow_tracks"].items())
+                          for net, r in failing.items())
         reasons.append(f"{total} narrow tracks ({which})")
-    reasons += _class_current_failures(settings, proj)
+    reasons += _class_current_failures(settings, proj, spec)
     summary["gate_failures"] = reasons
     drc_ok = summary["errors"] == 0 and empty == 0 and not reasons
     routed = summary["unconnected"] == 0
@@ -197,6 +201,9 @@ def run_drc(project: str) -> dict[str, Any]:
               f"{empty} net classes without nets, {summary['warnings']} warnings")
     if reasons:
         detail += "; " + "; ".join(reasons)
+    if accepted:
+        detail += "; accepted narrow: " + ", ".join(
+            f"{net} {r['min_width']:g} mm ({r['reason']})" for net, r in accepted.items())
     gt.set_gate(proj, "drc_clean", drc_ok, detail, hash_value=pcb_hash)
     gt.set_gate(proj, "unrouted_zero", routed, f"{summary['unconnected']} unconnected items",
                 hash_value=pcb_hash)
@@ -204,16 +211,63 @@ def run_drc(project: str) -> dict[str, Any]:
             "backup": backup["backup"]}
 
 
-def _class_current_failures(settings: Settings, proj: Project) -> list[str]:
-    """Spec net classes (name, nets, current_a) whose .kicad_pro width is below the
-    width the profile table requires for that current (SC-6)."""
-    if not proj.spec.is_file() or not proj.pro.is_file():
-        return []
+def _load_spec(proj: Project) -> dict[str, Any]:
+    if not proj.spec.is_file():
+        return {}
     try:
         data = yaml.safe_load(proj.spec.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise AcdError(f"spec/circuit-spec.yaml is not valid YAML: {exc}") from exc
-    classes = [c for c in (data.get("net_classes") or [] if isinstance(data, dict) else [])
+    return data if isinstance(data, dict) else {}
+
+
+def _split_narrow(spec: dict[str, Any], narrow: dict[str, dict[str, Any]]
+                  ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Split narrow tracks into failing and accepted ones.
+
+    A narrow net is accepted only if the spec lists it under accepted_narrow with a reason and
+    a min_width_mm the board does not go below. Editing the spec makes spec_confirmed stale,
+    so every accepted entry needs Andrew to re-confirm the spec.
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+    for e in spec.get("accepted_narrow") or []:
+        if not isinstance(e, dict) or not str(e.get("net") or "").strip():
+            problems.append("accepted_narrow entry without a net")
+            continue
+        entries[str(e["net"]).strip()] = e
+    failing: dict[str, Any] = {}
+    accepted: dict[str, Any] = {}
+    for net, row in narrow.items():
+        e = entries.get(net)
+        if e is None:
+            failing[net] = row
+            continue
+        reason = str(e.get("reason") or "").strip()
+        try:
+            floor = float(e.get("min_width_mm"))
+        except (TypeError, ValueError):
+            problems.append(f"accepted_narrow {net}: min_width_mm must be a number")
+            failing[net] = row
+            continue
+        if not reason:
+            problems.append(f"accepted_narrow {net}: a reason is required")
+            failing[net] = row
+        elif row["min_width"] + boardcheck.TOL < floor:
+            failing[net] = row  # narrower than what was accepted
+        else:
+            accepted[net] = {**row, "accepted_min_mm": floor, "reason": reason}
+    return failing, accepted, problems
+
+
+def _class_current_failures(settings: Settings, proj: Project,
+                            spec: dict[str, Any] | None = None) -> list[str]:
+    """Spec net classes (name, nets, current_a) whose .kicad_pro width is below the
+    width the profile table requires for that current (SC-6)."""
+    if not proj.pro.is_file():
+        return []
+    data = _load_spec(proj) if spec is None else spec
+    classes = [c for c in (data.get("net_classes") or [])
                if isinstance(c, dict) and c.get("current_a") not in (None, "")]
     if not classes:
         return []

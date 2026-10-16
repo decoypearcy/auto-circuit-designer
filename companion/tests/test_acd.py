@@ -670,9 +670,9 @@ def _backup_gates(zpath):
 def test_gate_tools_back_up_before_the_gate_record_changes(proj):
     register_and_verify()
     steps = [("spec", lambda: tools.confirm_spec("demo"), ["spec_confirmed"]),
-             ("schematic", lambda: tools.check_parts("demo"), ["parts_verified"]),
-             ("schematic", lambda: tools.run_erc("demo"), ["erc_clean"]),
-             ("routed", lambda: tools.run_drc("demo"), ["drc_clean", "unrouted_zero"])]
+             ("pre-parts", lambda: tools.check_parts("demo"), ["parts_verified"]),
+             ("pre-erc", lambda: tools.run_erc("demo"), ["erc_clean"]),
+             ("pre-drc", lambda: tools.run_drc("demo"), ["drc_clean", "unrouted_zero"])]
     for stage, call, new_gates in steps:
         before = _stage_backups(proj, stage)
         res = call()
@@ -681,9 +681,9 @@ def test_gate_tools_back_up_before_the_gate_record_changes(proj):
         taken = _backup_gates(proj / "backups" / res["backup"])
         assert all(g not in taken for g in new_gates), (stage, taken)
         assert all(g in tools.gate_status("demo")["gates"] for g in new_gates)
-    # the schematic backup of check_parts predates its own gate but holds earlier ones
+    # the backup of check_parts predates its own gate but holds earlier ones
     assert "spec_confirmed" in _backup_gates(proj / "backups" / sorted(
-        p.name for p in _stage_backups(proj, "schematic"))[0])
+        p.name for p in _stage_backups(proj, "pre-parts"))[0])
 
 
 def test_approve_backs_up_before_writing_approval(proj):
@@ -698,12 +698,63 @@ def test_approve_backs_up_before_writing_approval(proj):
     assert json.loads((proj / "records" / "approvals.json").read_text())[0]["approver"] == "Andrew"
 
 
-def test_gate_backups_are_pruned_per_stage(proj, monkeypatch):
+def test_gate_rerun_on_unchanged_design_reuses_the_backup(proj):
+    register_and_verify()
+    names = {tools.run_erc("demo")["backup"] for _ in range(4)}
+    assert len(names) == 1 and len(_stage_backups(proj, "pre-erc")) == 1
+    sch = proj / "demo.kicad_sch"
+    sch.write_text(sch.read_text() + "\n")  # a design change -> a new backup
+    assert tools.run_erc("demo")["backup"] not in names
+    assert len(_stage_backups(proj, "pre-erc")) == 2
+
+
+def test_gate_backups_never_prune_hand_stage_backups(proj, monkeypatch):
     monkeypatch.setenv("ACD_BACKUP_KEEP", "2")
     register_and_verify()
-    for _ in range(4):
+    hand = {tools.backup("demo", s)["backup"] for s in ("schematic", "routed")}
+    sch, pcb = proj / "demo.kicad_sch", proj / "demo.kicad_pcb"
+    for i in range(4):  # four review rounds, each with a design change
+        sch.write_text(sch.read_text() + "\n")
+        pcb.write_text(pcb.read_text() + "\n")
+        tools.check_parts("demo")
         tools.run_erc("demo")
-    assert len(_stage_backups(proj, "schematic")) == 2
+        tools.run_drc("demo")
+    assert len(_stage_backups(proj, "pre-erc")) == 2  # gate stages are pruned to the keep count
+    assert len(_stage_backups(proj, "pre-drc")) == 2
+    left = {p.name for p in (proj / "backups").iterdir()}
+    assert hand <= left  # the backups taken by hand before each stage are all still there
+
+
+def _spec_accepted(proj, text):
+    (proj / "spec" / "circuit-spec.yaml").write_text("name: demo\n" + text, encoding="utf-8")
+
+
+def test_accepted_narrow_passes_only_with_reason_and_floor(proj):
+    _pro_with_power(proj, assignments={"VIN": ["Power"]})
+    (proj / "demo.kicad_pcb").write_text(PCB_TRACKS)  # VIN at 0.25 mm in a 0.5 mm class
+    _spec_accepted(proj, "accepted_narrow:\n  - {net: VIN, min_width_mm: 0.25, "
+                         "reason: neck-down into U1 pins}\n")
+    res = tools.run_drc("demo")
+    assert res["gates"]["drc_clean"] is True
+    assert res["netclass_check"]["accepted_narrow"]["VIN"]["reason"] == "neck-down into U1 pins"
+    assert "accepted narrow: VIN 0.25 mm (neck-down into U1 pins)" in \
+        tools.gate_status("demo")["gates"]["drc_clean"]["detail"]
+    assert tools.review_summary("demo")["netclass"]["accepted_narrow"]["VIN"]["segments"] == 2
+    # narrower than the accepted floor -> fails
+    _spec_accepted(proj, "accepted_narrow:\n  - {net: VIN, min_width_mm: 0.3, reason: x}\n")
+    assert tools.run_drc("demo")["gates"]["drc_clean"] is False
+    # no reason -> fails, with the reason named
+    _spec_accepted(proj, "accepted_narrow:\n  - {net: VIN, min_width_mm: 0.25}\n")
+    res = tools.run_drc("demo")
+    assert res["gates"]["drc_clean"] is False
+    assert "accepted_narrow VIN: a reason is required" in res["gate_failures"]
+
+
+def test_adding_accepted_narrow_makes_spec_confirmation_stale(proj):
+    tools.confirm_spec("demo")
+    assert tools.gate_status("demo")["gates"]["spec_confirmed"]["effective"]
+    _spec_accepted(proj, "accepted_narrow:\n  - {net: VIN, min_width_mm: 0.25, reason: r}\n")
+    assert not tools.gate_status("demo")["gates"]["spec_confirmed"]["effective"]  # Andrew re-confirms
 
 
 def test_failed_gate_precondition_makes_no_backup(env):

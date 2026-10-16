@@ -18,7 +18,7 @@ it records the gate. Use the kicad one only for `get_drc_violations` detail.
 2. Never export except through `acd export_release`, and only after `acd approve`.
 3. Before writing to a project, run `acd lock_check`. If locked, stop and ask Andrew to close the project in KiCad. Never write while he has it open.
 4. Datasheet and part downloads need Andrew's approval first. Web lookups are fine.
-5. Back up before every change, never after. The acd tools `confirm_spec`, `check_parts`, `run_erc`, `run_drc` and `approve` back up the project first, automatically. Before any other change in a stage (schematic edits, placement moves, routing edits, review edits), run `acd backup(stage=<stage>)` first, so the backup holds the state before the change. Restoring that backup undoes the stage.
+5. Back up before every change, never after. Before any change in a stage (schematic edits, placement moves, routing edits, review edits), run `acd backup(stage=<stage>)` first, so the backup holds the state before the change. Restoring that backup undoes the stage. The acd gate tools also back up first, on their own stages so they never push your stage backups out: `confirm_spec` (spec), `check_parts` (pre-parts), `run_erc` (pre-erc), `run_drc` (pre-drc), `approve` (approved). A gate re-run on an unchanged design reuses its last backup instead of making a new one.
 6. Never hide a problem. Every ERC/DRC error, unrouted net, missing datasheet and unverified part goes in the review summary.
 7. All dimensions in mm. Never use the long dash character in anything you write.
 8. Release files are read-only history. Never edit anything in `releases/`. A new change is a new revision (step 10).
@@ -26,7 +26,7 @@ it records the gate. Use the kicad one only for `get_drc_violations` detail.
 ## kicad server quirks (found in T-15, base MCP v2.7.0)
 - `sync_schematic_to_board`, `autoroute` and `refill_zones` write the board file outside the session. Call kicad `open_project` straight after each one, before any other board call. Otherwise the next edit is refused ("Auto-save refused") or works on a stale board.
 - `create_netclass` does not assign its nets. Always follow it with `assign_net_to_class` for each net. Check that the `autoroute` result shows `netClasses.assignments` above 0, and that `acd run_drc` lists the nets under the class in `netclass_check`.
-- KiCad DRC does not check net class track widths. `acd run_drc` does (`netclass_check.narrow_tracks`). The DRC gate fails on any narrow track; there is no neck-down exception. Fix a narrow track by widening it or rerouting. If a fine-pitch neck-down is really needed, ask Andrew first: the gate has no exception mechanism yet, so it will fail until the companion is changed. A net class with no nets fails the DRC gate.
+- KiCad DRC does not check net class track widths. `acd run_drc` does (`netclass_check.narrow_tracks`). The DRC gate fails on any narrow track. Fix a narrow track by widening it or rerouting. If a neck-down is really needed (a wide rail entering a fine-pitch pin), ask Andrew; on his yes, add the net to `accepted_narrow` in the spec with the narrowest width and the reason (see Circuit spec format). Editing the spec makes `spec_confirmed` stale, so Andrew re-confirms it with `acd confirm_spec`. Accepted nets pass the gate but are always listed in the gate detail and the review. A net class with no nets fails the DRC gate.
 - `add_mounting_hole` uses a footprint that is not in KiCad 10 (`MountingHole_3.2mm`) and adds no schematic symbol. Do not use it; holes are schematic symbols (see Mounting holes).
 - The server writes `in_bom yes` on every placed symbol, even where the library says otherwise. Run `acd fix_bom_flags` after adding mounting holes or other non-BOM symbols.
 - `sync_schematic_to_board` does not copy custom fields (MPN, Manufacturer, Description, Datasheet) to footprints, so DRC shows `footprint_symbol_field_mismatch`, one per part. The BOM comes from the schematic, so this is a known, accepted warning. List it in the review; do not try to fix it.
@@ -72,6 +72,7 @@ parts:
 connections:
   - {net: VIN, pins: [J1.1, U1.3, C1.1]}
   - {net: GND, pins: [J1.2, U1.1, C1.2, C2.2, D1.1]}
+accepted_narrow: []   # only with Andrew's yes, e.g. {net: VIN, min_width_mm: 0.3, reason: neck-down into U1 SOT-23-5 pins}
 notes: []
 ```
 
@@ -105,7 +106,7 @@ notes: []
 - Set `Manufacturer`, `MPN` and `Datasheet` on every BOM part with kicad `batch_edit_schematic_components` (`{"U1": {"properties": {"Manufacturer": "...", "MPN": "...", "Datasheet": "..."}}}`).
 - Check the nets with kicad `list_schematic_nets` against the spec's connections before running ERC.
 - Layout for readability: power input left, outputs right, one functional block per area, net labels instead of long wires, decoupling caps next to their IC.
-- `acd check_parts`, then `acd run_erc`. Both back up the schematic first. Fix every error. Explain any warning you leave.
+- `acd check_parts`, then `acd run_erc` (each backs up first, on stages pre-parts and pre-erc). Fix every error. Explain any warning you leave.
 - Show Andrew `get_schematic_view`.
 
 ### 4. Rules and net classes
@@ -135,7 +136,7 @@ notes: []
 - Then this exact order: `refill_zones`, `open_project`, `add_gnd_stitching_vias(strategies=["in_zones"], spacing=7, edgeMargin=1.5)`, `save_board`, `refill_zones`, `open_project`. Stitching needs filled zones, and DRC needs fills that include the vias.
 - Run `refill_zones` (then `open_project`) after any later change to tracks, pours or placement, and always right before `acd run_drc`.
 - Manual: tell Andrew the project is ready; wait until he says he has closed it.
-- `acd run_drc` (it backs up the routed stage first). Fix errors (kicad `get_drc_violations`, `modify_trace`, `route_pad_to_pad`, `add_via`). Re-run until clean or until only items needing Andrew remain.
+- `acd run_drc` (it backs up first, on stage pre-drc). Fix errors (kicad `get_drc_violations`, `modify_trace`, `route_pad_to_pad`, `add_via`). Re-run until clean or until only items needing Andrew remain.
 
 ### 7. Review loop
 - `acd review_summary` and send Andrew this:
@@ -146,6 +147,7 @@ DRC: <n> errors, <n> warnings
 Silk warnings: <n> (<type: item> per line, from silk_warnings)
 Other warnings: <type: count> (from erc/drc warning_types; say which are the known accepted ones)
 Net classes: <class: width, nets> (from netclass); narrow tracks: <net: min width, segments> (any narrow track fails the DRC gate)
+Accepted narrow: <net: min width, reason> (from netclass.accepted_narrow, or none)
 Parts missing a datasheet: <list or none>
 Unrouted nets: <n> (<list>)
 Unverified parts: <list or none>
@@ -163,7 +165,7 @@ Preview: <board view>
 
 ### 9. Export
 - `acd export_release`. Report the release folder and the `rev-X_pcbway.zip` to upload to PCBWay.
-- The release is designed to be reproducible: every date in it is the approval date, and the zips have fixed timestamps, so a re-export of the same approved revision should give identical files. This was tested only with the fake KiCad CLI; check it on the first real release after the update. If `acd export_release` reports that the release folder exists, leave it alone and start a new revision if a change is needed.
+- The release is reproducible: every date in it is the approval date, and the zips have fixed timestamps, so a re-export of the same approved revision gives identical files (confirmed on KiCad 10.0.6 in the T-16 regression run). If `acd export_release` reports that the release folder exists, leave it alone and start a new revision if a change is needed.
 - `acd verify_release` to confirm the files match the manifest.
 - Check that the bundle opens in a Gerber reader (KiCad's gerbview, or gerbonara on Andrew's PC) and that the Edge_Cuts size matches the spec.
 - Remind Andrew to check the zip in PCBWay's online Gerber viewer before ordering.

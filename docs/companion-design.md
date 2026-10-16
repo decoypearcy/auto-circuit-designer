@@ -89,7 +89,7 @@ if KiCad lock files are present (Andrew has the project open).
 | `run_drc(project)` | `kicad-cli pcb drc --format json --schematic-parity`, save report, set gates 4 and 5, return counts, unconnected count and first 20 errors. |
 | `review_summary(project)` | Gate table plus ERC/DRC counts, unconnected nets list, open warnings count. Read-only. |
 | `gate_status(project)` | Gates with staleness. Read-only. |
-| `backup(project, stage)` | Zip to `backups/`, prune to ACD_BACKUP_KEEP per stage. Stages: spec, library, schematic, placement, routed, review, approved, pre-restore, manual. |
+| `backup(project, stage)` | Zip to `backups/`, prune to ACD_BACKUP_KEEP per stage. Stages: spec, library, schematic, placement, routed, review, approved, pre-restore, manual; gate tools also use pre-parts, pre-erc and pre-drc (their own stages, so gate re-runs never prune hand backups; skipped when the design files match the newest backup of that stage). |
 | `list_backups(project)` | Newest first. |
 | `restore_backup(project, backup_name)` | Backup current state as `pre-restore`, then replace working files (never backups/ or releases/) with the zip contents. Resets gates to stale naturally via hashes. |
 | `approve(project, approver, note)` | Requires gates 1 to 5 passed and not stale. Records approval with file hashes, sets status approved, makes an `approved` backup. |
